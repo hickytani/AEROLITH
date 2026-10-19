@@ -4,7 +4,7 @@
 
 1. Extend independent calculation references and geometry validation when adding supported gear profiles; current public equation references and fixed reference cases are documented in `engineering-reference-validation.md`, but they do not validate engagement or strength.
 2. Add process-safe locking or transactional storage before allowing concurrent writers; add artifact index recovery and integrity checks.
-3. Add browser acceptance checks and improve component explanations and evidence panels without overstating verification. Current environment has no browser surface or installed Playwright/browser runner, so browser acceptance remains unperformed.
+3. Run browser acceptance for Studio Apply, revision-bound geometry and exports, Learn interaction, New Design, and Platform copy controls. Current environment has no browser surface or installed Playwright/browser runner, so browser acceptance remains unperformed.
 4. Define explicit graph/dependency edges and a documented artifact lifecycle before adding more design families.
 5. Connect a server-side language-model provider only after schema validation, fallback behavior, privacy controls, and evaluation benchmarks are in place.
 

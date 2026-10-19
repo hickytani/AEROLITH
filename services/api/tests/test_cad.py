@@ -74,6 +74,22 @@ def test_default_polygon_vertices_bore_and_analytical_xy_envelope():
     assert 2 * expected_half_span < 40
 
 
+def test_geometry_changes_when_tooth_parameters_change():
+    default = default_design()
+    changed = default.model_copy(deep=True)
+    changed.components[0].teeth = 12
+    changed.components[1].teeth = 30
+    changed.requirements.gear_ratio = 2.5
+    original_shape = gear_solid(18, 2, 12, 4).val()
+    changed_shape = gear_solid(12, 2, 12, 4).val()
+    assert original_shape.isValid() and changed_shape.isValid()
+    assert original_shape.Volume() != pytest.approx(changed_shape.Volume(), rel=1e-6)
+    original_assembly = build_assembly(default)
+    changed_assembly = build_assembly(changed)
+    assert original_assembly.children[1].loc.toTuple()[0][0] == pytest.approx(72)
+    assert changed_assembly.children[1].loc.toTuple()[0][0] == pytest.approx(42)
+
+
 def test_step_and_stl_exports_reopen_in_opencascade(tmp_path):
     design = default_design()
     step_path = tmp_path / "roundtrip.step"

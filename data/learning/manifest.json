@@ -1,0 +1,13 @@
+{
+  "dataset_version": "gear-requirements-synthetic-1.0",
+  "schema_version": "1.0",
+  "task": "natural_language_to_reviewable_gear_specification",
+  "example_license": "project-local, not separately licensed",
+  "provenance": "Hand-authored synthetic prompts and expected values; no private project text or third-party documents.",
+  "splits": {
+    "train": "train.jsonl",
+    "validation": "validation.jsonl",
+    "test": "test.jsonl"
+  },
+  "warning": "Examples support parser evaluation only. They are not engineering benchmarks or evidence of gear safety. The repository currently has no LICENSE file; redistribution rights are not separately granted."
+}

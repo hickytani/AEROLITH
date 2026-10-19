@@ -6,6 +6,8 @@ from pint import UnitRegistry
 
 from .domain import Design
 
+CALCULATION_METHOD_VERSION = "spur-gear-kinematics-0.1"
+
 units = UnitRegistry()
 
 
@@ -49,6 +51,29 @@ def derive(design: Design) -> dict:
                 "bore_diameter_mm": bore_diameter_mm(design),
             }
             for component in (pinion, gear)
+        ],
+    }
+
+
+def calculation_details(design: Design) -> dict:
+    """Inspectable calculation values and method provenance for this revision."""
+    req = design.requirements
+    pinion, gear = design.components
+    d = derive(design)
+    common = ["Ordinary external spur pair with common module; rotation direction is not shown in speed magnitude."]
+    specs = [
+        ("gear_ratio", "Transmission ratio", "ratio", "z₂ / z₁", f"{gear.teeth} / {pinion.teeth}", ["External-pair speed magnitude; driven gear rotates in the opposite direction."]),
+        ("pinion_pitch_diameter_mm", "Pinion pitch diameter", "mm", "m z₁", f"{req.module_mm:g} mm × {pinion.teeth}", common),
+        ("gear_pitch_diameter_mm", "Driven gear pitch diameter", "mm", "m z₂", f"{req.module_mm:g} mm × {gear.teeth}", common),
+        ("center_distance_mm", "Center distance", "mm", "(d₁ + d₂) / 2", f"({d['pinion_pitch_diameter_mm']:g} mm + {d['gear_pitch_diameter_mm']:g} mm) / 2", common),
+        ("output_speed_rpm", "Ideal output speed", "rpm", "n₁ / i", f"{req.input_speed_rpm:g} rpm / {d['gear_ratio']:g}", ["Ideal rigid kinematics; speed losses and compliance are excluded."]),
+        ("ideal_output_torque_Nm", "Ideal output torque", "N·m", "T₁ × i", f"{req.input_torque_Nm:g} N·m × {d['gear_ratio']:g}", ["Lossless power transmission assumed; not a load rating."]),
+    ]
+    return {
+        "provenance": {"design_revision": design.revision, "family_id": design.family, "schema_version": design.schema_version, "method_version": CALCULATION_METHOD_VERSION},
+        "results": [
+            {"key": key, "name": name, "value": d[key], "unit": unit, "formula": formula, "substitution": substitution, "assumptions": assumptions, "reference": "See docs/engineering-reference-validation.md; reference equations do not validate this polygon tooth shape.", "method_version": CALCULATION_METHOD_VERSION, "status": "CALCULATED", "design_revision": design.revision}
+            for key, name, unit, formula, substitution, assumptions in specs
         ],
     }
 

@@ -9,7 +9,7 @@
     "api": "uv run --cache-dir .uv-cache uvicorn aeropkmech.main:app --app-dir services/api --host 127.0.0.1 --port 8000",
     "build:web": "next build apps/web",
     "web": "next dev apps/web --hostname 127.0.0.1 --port 3000",
-    "test": "uv run --cache-dir .uv-cache pytest"
+    "test": "uv run --cache-dir .uv-cache pytest && node --test tests/frontend-contract.test.mjs"
   },
   "engines": {
     "node": ">=20"
