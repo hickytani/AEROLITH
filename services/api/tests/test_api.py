@@ -5,7 +5,7 @@ import pytest
 
 from aeropkmech import store
 from aeropkmech.cad import build_assembly
-from aeropkmech.main import app
+from aeropkmech.main import app, cad
 
 
 def test_revision_geometry_exports_and_requirement_intake(tmp_path, monkeypatch):
@@ -67,12 +67,25 @@ def test_revision_geometry_exports_and_requirement_intake(tmp_path, monkeypatch)
     assert step.status_code == 200
     assert step.content.startswith(b"ISO-10303-21;")
     assert step.headers["x-design-revision"] == "2"
-    mesh = client.get("/api/v1/geometry/pinion.stl?revision=2")
-    assert mesh.status_code == 200
-    assert mesh.headers["x-design-revision"] == "2"
-    assert mesh.headers["x-generator-version"] == "cq-polygon-approx-0.1"
-    assert len(mesh.content) > 84
-    assert client.get("/api/v1/geometry/pinion.stl?revision=1").status_code == 409
+    for component_id in ("pinion", "gear"):
+        mesh = client.get(f"/api/v1/geometry/{component_id}.stl?revision=2")
+        assert mesh.status_code == 200
+        assert mesh.headers["content-type"].startswith("model/stl")
+        assert mesh.headers["x-design-revision"] == "2"
+        assert mesh.headers["x-geometry-revision"] == "2"
+        assert mesh.headers["x-geometry-component-id"] == component_id
+        assert mesh.headers["x-geometry-units"] == "mm"
+        assert mesh.headers["x-geometry-format"] == "stl"
+        assert mesh.headers["x-artifact-id"].startswith(f"{component_id}:r2:")
+        assert mesh.headers["x-artifact-sha256"]
+        assert mesh.headers["cache-control"] == "no-store"
+        assert len(mesh.content) > 84
+        triangle_count = int.from_bytes(mesh.content[80:84], "little")
+        assert triangle_count > 0
+        assert len(mesh.content) == 84 + triangle_count * 50
+    stale_mesh = client.get("/api/v1/geometry/pinion.stl?revision=1")
+    assert stale_mesh.status_code == 409
+    assert stale_mesh.headers["x-design-revision"] == "2"
     html_report = client.get("/api/v1/report")
     assert html_report.status_code == 200
     assert "revision 2" in html_report.text
@@ -110,6 +123,51 @@ def test_revision_geometry_exports_and_requirement_intake(tmp_path, monkeypatch)
     assert refreshed_mesh.headers["x-design-revision"] == "3"
     assert client.get("/").status_code == 200
     assert client.get("/vendor/build/three.module.js").status_code == 200
+    assert client.get("/mesh-loader.js").status_code == 200
+    assert client.get("/camera-fit.js").status_code == 200
+
+
+def test_component_mesh_generation_rejects_revision_change_during_build(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(store, "STATE_FILE", tmp_path / "data" / "project.json")
+    monkeypatch.setattr("aeropkmech.main.ARTIFACTS", tmp_path / "artifacts")
+    client = TestClient(app)
+    initial = client.get("/api/v1/project").json()
+    original_export = cad.export_component_stl
+
+    def edit_while_generating(design, component_id, target):
+        original_export(design, component_id, target)
+        changed = client.patch("/api/v1/project", json={"gear_teeth": 60})
+        assert changed.status_code == 200
+
+    monkeypatch.setattr("aeropkmech.main.cad.export_component_stl", edit_while_generating)
+    response = client.get(f"/api/v1/geometry/pinion.stl?revision={initial['revision']}")
+    assert response.status_code == 409
+    assert response.headers["x-design-revision"] == str(initial["revision"] + 1)
+    assert client.get("/api/v1/artifacts").json()["artifacts"] == []
+
+
+def test_component_geometry_failure_is_isolated_to_the_requested_component(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(store, "STATE_FILE", tmp_path / "data" / "project.json")
+    monkeypatch.setattr("aeropkmech.main.ARTIFACTS", tmp_path / "artifacts")
+    client = TestClient(app)
+    original_export = cad.export_component_stl
+
+    def fail_only_gear(design, component_id, target):
+        if component_id == "gear":
+            raise RuntimeError("gear tessellation failed")
+        return original_export(design, component_id, target)
+
+    monkeypatch.setattr("aeropkmech.main.cad.export_component_stl", fail_only_gear)
+    pinion = client.get("/api/v1/geometry/pinion.stl?revision=1")
+    gear = client.get("/api/v1/geometry/gear.stl?revision=1")
+    assert pinion.status_code == 200
+    assert pinion.headers["x-geometry-component-id"] == "pinion"
+    assert gear.status_code == 500
+    assert "gear tessellation failed" in gear.json()["detail"]
+    indexed = client.get("/api/v1/artifacts").json()["artifacts"]
+    assert [item["kind"] for item in indexed] == ["pinion"]
 
 
 def test_malformed_project_and_cad_execution_failure_are_reported(tmp_path, monkeypatch):

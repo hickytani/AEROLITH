@@ -18,6 +18,8 @@ The server enforces integer tooth-count ranges (pinion 8–80, gear 8–120), mo
 
 `docs/engineering-reference-validation.md` records public references, assumptions, fixed reference values, and tolerances. API regression cases cover equal and non-divisible ratios and supported input boundaries through persisted state. CAD tests inspect vertex rings, through-bores and bounding dimensions, and reopen STEP/STL exports with Open CASCADE. These are implementation regression checks; they are not an independent standards benchmark or evidence of gear strength, contact, fatigue life, tooth engagement, manufacturing suitability, or safety.
 
+The component preview uses CAD-generated STL coordinates in millimetres with one Three.js scene unit per millimetre. Component endpoints bind the response to the generating component and revision, identify STL/mm, and return the artifact SHA-256. The UI verifies the digest and finite triangle data before adding a mesh. Camera FIT uses the union of visible mesh bounds. Mesh validity and placement do not validate physical contact; the gears remain the polygonal educational approximation described above.
+
 ## Known gaps
 
 No involute construction, pressure angle, backlash, profile shift, interference/contact-ratio checks, shaft or support design, material properties, standards-based bending/contact stress, fatigue, thermal behavior, solver, uncertainty, or independent benchmark is included. Do not use these artifacts for manufacture or real-world design decisions.

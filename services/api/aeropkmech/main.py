@@ -214,12 +214,33 @@ def component_geometry(component_id: Literal["pinion", "gear"], revision: int | 
     temporary = ARTIFACTS / f".generating-{uuid.uuid4().hex}.stl"
     try:
         cad.export_component_stl(design, component_id, temporary)
+        latest = store.load()
+        if latest.revision != design.revision:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Design changed from revision {design.revision} to {latest.revision} while geometry was generated.",
+                headers={"X-Design-Revision": str(latest.revision)},
+            )
         path, metadata = artifact_store.publish(temporary.read_bytes(), ARTIFACTS, design, component_id, "stl", cad.GENERATOR_VERSION)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise ArtifactExecutionError(f"CadQuery component tessellation failed: {exc}") from exc
     finally:
         temporary.unlink(missing_ok=True)
-    return FileResponse(path, media_type="model/stl", filename=path.name, headers={**artifact_headers(metadata, design.revision), "Cache-Control": "no-store"})
+    return FileResponse(
+        path,
+        media_type="model/stl",
+        filename=path.name,
+        headers={
+            **artifact_headers(metadata, design.revision),
+            "Cache-Control": "no-store",
+            "X-Geometry-Component-ID": component_id,
+            "X-Geometry-Revision": str(design.revision),
+            "X-Geometry-Units": "mm",
+            "X-Geometry-Format": "stl",
+        },
+    )
 
 
 @app.get("/api/v1/report", response_class=HTMLResponse)
@@ -294,6 +315,8 @@ def report_pdf():
 def artifact_headers(metadata: dict, revision: int, stale: bool = False) -> dict[str, str]:
     return {
         "X-Design-Revision": str(revision),
+        "X-Artifact-ID": metadata["artifact_id"],
+        "X-Artifact-Kind": metadata["kind"],
         "X-Generator-Version": metadata["generator_version"],
         "X-Artifact-SHA256": metadata["sha256"],
         "X-Artifact-Stale": str(stale).lower(),

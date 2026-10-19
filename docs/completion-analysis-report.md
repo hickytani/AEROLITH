@@ -190,3 +190,16 @@ Sprint 3 verification completed on 2026-10-20:
 | Browser acceptance | Not run: CUA browser inventory returned `apps: []`, `browsers: []`; no installed browser runner was available | Visual layout, pointer/keyboard interactions, WebGL rendering, and real download interaction remain unverified |
 
 The single test warning is the existing Starlette/httpx test-client deprecation. These checks establish local code-path behavior and buildability, not browser visual correctness, engineering safety, or deployment readiness.
+
+
+## 16. Sprint 4 geometry recovery and readability
+
+The Sprint 4 evidence and limits are recorded in [sprint-4-geometry-readability.md](sprint-4-geometry-readability.md). The original screenshot's exact failed request could not be reproduced because the screenshot/network capture was not available and no browser surface was present. In isolated baseline API checks, both generated component meshes returned 200 and parsed in Three.js. The confirmed prior gap was that `STLLoader.load()` reduced HTTP, parse, and stale-revision failures to a generic message and the component responses lacked explicit component/units/format identity.
+
+The geometry API now returns component/revision/format/units and artifact checksum metadata, rechecks project revision after tessellation, and rejects stale output with 409. The Studio fetches, validates and checksum-verifies each component independently, refreshes project state on stale responses, and reports per-component errors while retaining successful partner geometry. FIT uses visible CAD mesh bounds; ISO/TOP/FRONT poses, viewer cleanup, component metadata, and local unit scale are tested. The existing polygon tooth approximation and all engineering boundaries remain unchanged.
+
+Studio and Learn/Platform now share a local system font stack and readable typography tokens. Google Fonts are no longer fetched. Styles set body copy to 16 px and no CSS font declaration below 12 px; hierarchy, contrast, keyboard focus, controls, statuses and responsive breakpoints were updated.
+
+The first live post-change asset smoke check found a 404 for `/mesh-loader.js`: Next.js did not proxy the new legacy Studio module. Adding explicit rewrites for `mesh-loader.js` and `camera-fit.js` fixed it. The final live smoke check returned HTTP 200 for all four pages and all four Studio assets. Both component STL checksums matched their downloaded bytes and Three.js parsed both revision-bound meshes.
+
+Final Sprint 4 automated verification: `npm test` passed **53 Python tests** and **9 Node tests**, with one existing Starlette/httpx deprecation warning; `npm run build:web`, standalone TypeScript, and JavaScript syntax checks passed. Browser visual acceptance was not possible: CUA reported `apps: []`, `browsers: []`, and no local browser, Playwright, or Puppeteer runner was installed. Responsive visual fit, WebGL rendering, pointer/keyboard camera interaction, and the original screenshot's exact failing request remain unverified.

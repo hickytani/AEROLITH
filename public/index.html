@@ -31,15 +31,15 @@
         <label>Input speed<span class="unit">rpm</span><input id="speed" type="number" min="1" step="10" disabled></label>
         <button id="apply" class="primary" disabled>Apply changes <span>↗</span></button><div id="error" class="error" role="alert"></div>
         <div class="components" id="components"><div class="railhead"><span>02</span><b>Components</b><small>SELECT OR TOGGLE VISIBILITY</small></div>
-          <button class="component" data-id="pinion" aria-pressed="false"><span class="dot cyan"></span><span><span id="pinion-name">Pinion</span><small>DRIVER · INPUT</small></span><span class="eye" aria-label="Toggle visibility">◉</span></button>
-          <button class="component" data-id="gear" aria-pressed="false"><span class="dot silver"></span><span><span id="gear-name">Driven gear</span><small id="gear-label">OUTPUT</small></span><span class="eye" aria-label="Toggle visibility">◉</span></button>
+          <div class="component" data-id="pinion"><button type="button" class="component-select" data-id="pinion" aria-pressed="false"><span class="dot cyan"></span><span><span id="pinion-name">Pinion</span><small id="pinion-meta">DRIVER · INPUT</small></span></button><button type="button" class="eye" data-visibility="pinion" aria-label="Hide pinion" aria-pressed="true">Visible</button></div>
+          <div class="component" data-id="gear"><button type="button" class="component-select" data-id="gear" aria-pressed="false"><span class="dot silver"></span><span><span id="gear-name">Driven gear</span><small id="gear-meta">OUTPUT</small></span></button><button type="button" class="eye" data-visibility="gear" aria-label="Hide driven gear" aria-pressed="true">Visible</button></div>
         </div>
         <button id="restore-demo" class="text-button">Return to demo design</button>
       </aside>
       <section class="stage">
         <div class="stagebar"><div><b>ASSEMBLY VIEW</b><span id="geometry-rev">GEOMETRY NOT LOADED</span></div><div class="cam"><button data-view="iso">ISO</button><button data-view="top">TOP</button><button data-view="front">FRONT</button><button id="reset">FIT</button></div></div>
-        <div id="viewport"><div class="loading" id="loading">Preparing parametric view…</div><div class="axis">X <b>Y</b> Z</div></div>
-        <div class="stagefoot"><span><i class="signal"></i><span id="geometry-state">GEOMETRY GENERATED</span></span><span>EDUCATIONAL TOOTH APPROXIMATION</span></div>
+        <div id="viewport"><div class="loading" id="loading" role="status">Preparing parametric view…</div><div class="geometry-errors" id="geometry-errors" role="alert" hidden></div><div class="axis">X <b>Y</b> Z</div></div>
+        <div class="stagefoot"><span><i class="signal signal-loading" id="geometry-signal"></i><span id="geometry-state">GEOMETRY NOT LOADED</span></span><span>EDUCATIONAL TOOTH APPROXIMATION · mm</span></div>
       </section>
       <aside class="results">
         <div class="railhead"><span>03</span><b>Calculated results</b><small id="result-rev">CURRENT REVISION</small></div>

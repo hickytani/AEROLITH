@@ -13,8 +13,8 @@ Status definitions: **Implemented** is present in this demonstrator; **Partial**
 | Traceability, templates, requirement mapping | Planned | Not yet modeled. |
 | Parametric geometry | Partial | CadQuery/Open CASCADE polygon-tooth solids for two gears; approximation is not involute geometry. |
 | Named components and editable dimensions | Partial | Two named components, tooth counts and shared dimensions. |
-| Browser viewport, orbit, zoom, pan, selection, visibility and presets | Partial | Three.js viewer loads the generated component STL from the backend; interaction is in place. |
-| Viewport revision, fit, and component inspection | Partial | Camera fit and named views, selected component highlight, visibility toggles and committed revision label are implemented; browser acceptance is still unverified. |
+| Browser viewport, orbit, zoom, pan, selection, visibility and presets | Partial | Three.js validates revision/component/unit/format and SHA-256 for each generated mesh; named selection and visibility controls map to scene meshes. No browser interaction test was available. |
+| Viewport revision, fit, and component inspection | Partial | FIT frames visible generated mesh bounds; ISO/TOP/FRONT poses, disposal, component metadata, stale-response refresh and partial-component error display are implemented and unit/API tested. Real WebGL/browser acceptance remains unverified. |
 | Assemblies, mates, clearances, exploded view, variants, undo/redo and comparison | Planned | Not implemented. |
 | STEP / STL export | Partial | Genuine CadQuery/Open CASCADE assembly exports; profile remains an educational approximation. |
 | Geometry and unit checks | Partial | Numeric range validation plus vertex, bore, solid, bounds, and STEP/STL round-trip checks at tested boundaries; reference dimensions do not establish gear engagement. Pint dimensional arithmetic is used, but there is no general unit parser or interference check. |
