@@ -1,0 +1,28 @@
+{
+  "name": "aeropkmech",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node scripts/run.mjs production",
+    "dev": "node scripts/run.mjs",
+    "api": "uv run --cache-dir .uv-cache uvicorn aeropkmech.main:app --app-dir services/api --host 127.0.0.1 --port 8000",
+    "build:web": "next build apps/web",
+    "web": "next dev apps/web --hostname 127.0.0.1 --port 3000",
+    "test": "uv run --cache-dir .uv-cache pytest"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@next/swc-win32-x64-msvc": "^16.4.2",
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "next": "^16.4.2",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "three": "^0.180.0",
+    "typescript": "^7.0.2"
+  }
+}

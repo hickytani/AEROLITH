@@ -1,0 +1,12 @@
+.venv/
+.python-install/
+.uv-cache/
+.npm-cache/
+node_modules/
+.next/
+.pytest-tmp/
+__pycache__/
+*.py[cod]
+artifacts/*
+!artifacts/.gitkeep
+data/project.json
