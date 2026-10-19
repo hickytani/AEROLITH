@@ -72,6 +72,7 @@ def test_revision_geometry_exports_and_requirement_intake(tmp_path, monkeypatch)
     assert mesh.headers["x-design-revision"] == "2"
     assert mesh.headers["x-generator-version"] == "cq-polygon-approx-0.1"
     assert len(mesh.content) > 84
+    assert client.get("/api/v1/geometry/pinion.stl?revision=1").status_code == 409
     html_report = client.get("/api/v1/report")
     assert html_report.status_code == 200
     assert "revision 2" in html_report.text
@@ -127,6 +128,7 @@ def test_malformed_project_and_cad_execution_failure_are_reported(tmp_path, monk
     failed = client.get("/api/v1/export/step")
     assert failed.status_code == 500
     assert failed.json()["verification"]["state"] == "EXECUTION_ERROR"
+    assert client.get("/api/v1/artifacts").json()["artifacts"] == []
 
 
 def test_malformed_artifact_index_is_reported_explicitly(tmp_path, monkeypatch):

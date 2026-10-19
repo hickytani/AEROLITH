@@ -1,5 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  experimental: { cpus: 1 },
   async rewrites() {
     const api = process.env.AEROPKMECH_API_ORIGIN || 'http://127.0.0.1:8000';
     return [

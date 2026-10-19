@@ -4,6 +4,8 @@ Status definitions: **Implemented** is present in this demonstrator; **Partial**
 
 | Area / feature | Status | Scope |
 |---|---|---|
+| Design-family contract | Partial | Typed registry contains only validated `spur_gear_pair@1.0`; metadata and capabilities are API-discoverable. No second family is implemented. |
+| New Design | Partial | Registry-driven initialization for the gear family; replaces the single active local project as a new revision and preserves revision history. Not independent multi-project storage. |
 | Natural-language requirement extraction | Partial | Deterministic family-scoped parser extracts typed inputs and explicit evidence; reports missing/conflicting values, no automatic edit, no LLM. |
 | Dimensions, loads, operating inputs and objectives | Partial | Fixed typed numeric fields for ratio, torque, speed, module and width; no units parser or acceptance criteria. |
 | Files, drawings, sketches and PDF ingestion | Unsupported | No parser or interpretation claim. |
@@ -12,12 +14,17 @@ Status definitions: **Implemented** is present in this demonstrator; **Partial**
 | Parametric geometry | Partial | CadQuery/Open CASCADE polygon-tooth solids for two gears; approximation is not involute geometry. |
 | Named components and editable dimensions | Partial | Two named components, tooth counts and shared dimensions. |
 | Browser viewport, orbit, zoom, pan, selection, visibility and presets | Partial | Three.js viewer loads the generated component STL from the backend; interaction is in place. |
+| Viewport revision, fit, and component inspection | Partial | Camera fit and named views, selected component highlight, visibility toggles and committed revision label are implemented; browser acceptance is still unverified. |
 | Assemblies, mates, clearances, exploded view, variants, undo/redo and comparison | Planned | Not implemented. |
 | STEP / STL export | Partial | Genuine CadQuery/Open CASCADE assembly exports; profile remains an educational approximation. |
 | Geometry and unit checks | Partial | Numeric range validation plus vertex, bore, solid, bounds, and STEP/STL round-trip checks at tested boundaries; reference dimensions do not establish gear engagement. Pint dimensional arithmetic is used, but there is no general unit parser or interference check. |
 | Torque/speed/ratio calculations | Partial | Ideal lossless gear ratio/speed/torque only. |
 | Stress, deflection, thermal, safety factor and solver simulation | Unsupported | Explicit unknown/untested statuses. |
 | Evidence, assumptions and status vocabulary | Partial | Typed verification states with summaries/evidence and revision-bound reports; overall valid designs remain PARTIAL, and failed inputs are not presented as mechanical failure. No general evidence graph. |
+| Calculation traceability | Partial | Project responses include formula, substitution, units, assumptions, method version, reference note and calculation revision for supported gear values. |
+| AeroPKmech Learn | Partial | One interactive, backend-calculated spur-gear lesson with quiz and browser-local progress. Other listed topics are explicitly planned. No connected AI tutor. |
+| AeroPKmech Platform | Partial | Developer page inventories live FastAPI OpenAPI routes and provides local code examples and copy controls. No hosted API, API keys, accounts, quotas, or billing. |
+| PK Intelligence evaluation | Partial | Synthetic hand-authored splits and deterministic extraction evaluation harness. No training, external corpus, or independent engineering validation. |
 | Component explanations and learning | Planned | This interface is a design study; no lesson engine. |
 | Design copilot / LLM adapter | Unsupported | No provider connection or AI edit path. |
 | Revision history and invalidation | Partial | Prior project state retained; supported results recompute. Artifacts have a local checksum index and revision-based stale markers; no dependency graph or cross-process write coordination. |

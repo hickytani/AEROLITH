@@ -55,7 +55,11 @@ def build_assembly(design: Design) -> cq.Assembly:
 
 
 def export_stl(design: Design, target: Path) -> None:
-    build_assembly(design).export(str(target), exportType="STL", tolerance=0.08, angularTolerance=0.15)
+    # Explicit serial meshing avoids OCCT worker-pool instability on constrained
+    # Windows workstations while keeping the same tessellation tolerances.
+    build_assembly(design).toCompound().exportStl(
+        str(target), tolerance=0.08, angularTolerance=0.15, ascii=False, relative=True, parallel=False
+    )
 
 
 def export_step(design: Design, target: Path) -> None:
@@ -69,4 +73,6 @@ def export_component_stl(design: Design, component_id: str, target: Path) -> Non
     if component_id == "gear":
         center = req.module_mm * (design.components[0].teeth + component.teeth) / 2
         solid = solid.rotate((0, 0, 0), (0, 0, 1), 180 / component.teeth).translate((center, 0, 0))
-    solid.export(str(target), tolerance=0.08, angularTolerance=0.15)
+    solid.val().exportStl(
+        str(target), tolerance=0.08, angularTolerance=0.15, ascii=False, relative=True, parallel=False
+    )

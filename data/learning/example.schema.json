@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["id", "split", "text", "expected", "provenance"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "split": {"enum": ["train", "validation", "test"]},
+    "text": {"type": "string", "minLength": 1},
+    "expected": {
+      "type": "object",
+      "required": ["parsed", "proposal", "conflict_count"],
+      "properties": {
+        "parsed": {"type": "boolean"},
+        "proposal": {"type": "object", "additionalProperties": {"type": ["number", "null"]}},
+        "conflict_count": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["origin", "license", "expected_values"],
+      "properties": {
+        "origin": {"const": "synthetic_hand_authored"},
+        "license": {"type": "string"},
+        "expected_values": {"type": "string"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

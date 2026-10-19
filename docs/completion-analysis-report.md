@@ -112,7 +112,7 @@ Both pytest runs emitted one Starlette deprecation warning: using `httpx` with `
 - No login, authorization, tenant isolation, CSRF defense, rate limit, or privacy/retention control is implemented.
 - Project state is a single JSON file. Durable database transactions, backup/restore, concurrent edits, and multi-project workflows are absent.
 - CAD generation is synchronous and has no isolated worker, resource quota, background job queue, or operational monitoring.
-- Exports are revision-named and responses carry revision headers, but there is no persisted artifact registry, stale status, or historical artifact retrieval contract.
+- Exports are revision-named and indexed with checksums; historical artifacts remain retrievable and are labeled stale after a design change. Artifact file and index updates are separate atomic writes, not one transaction.
 - Requirement parsing can miss valid phrasing or match a narrow supported phrase incorrectly. Its evidence and confirmation status help make the result reviewable; they are not a guarantee of semantic correctness.
 - The interface is a single-family demonstrator. Advanced component editing, assemblies/mates, clearances, constraints, variants, undo/redo, comparison, and traceability are absent or planned.
 
@@ -122,8 +122,8 @@ The following must not be represented as delivered: involute/manufacturing-ready
 
 ## 11. Recommended next work, in order
 
-1. **Independent engineering checks:** select authoritative gear references, define supported assumptions, and compare geometry and equations against independently calculated reference cases. Add explicit tests for supported calculations and known exclusions.
-2. **Improve interaction evidence:** visually inspect core browser flows and cover user-facing errors, editing, proposal confirmation, viewport refresh, and report/export downloads.
+1. **Independent engineering checks:** extend sourced equation cases and add a profile/contact benchmark before making broader geometry claims. Current checks remain reference calculations and CAD topology round trips, not independent physical validation.
+2. **Improve interaction evidence:** visually inspect core browser flows and cover user-facing errors, editing, proposal confirmation, viewport refresh, and report/export downloads when a browser runner is available.
 3. **Strengthen state and artifact history:** add atomic persistence and explicit revision/artifact metadata with stale detection before adding more geometry families.
 4. **Constrain geometry claims:** either retain the educational polygon model and label it at point of use, or develop and independently verify an involute implementation with defined pressure angle and clearance assumptions.
 5. **Provider/model work only with evaluation inputs:** define permissioned example data, held-out labels, schema/error metrics and unsupported-claim checks before considering remote inference or training. Keep all proposals human-reviewed.
@@ -160,3 +160,33 @@ Browser acceptance was not run. At review time, the computer-use browser invento
 `npm test` collected **43 tests: 43 passed**, with the existing single Starlette/httpx deprecation warning. Final production build and syntax-check results will be recorded after the remaining checks.
 
 Final Sprint 2 checks: `npm run build:web` passed (Next.js compile, TypeScript and static generation); `node --check public/app.js` passed; `node --check scripts/run.mjs` passed. No browser visual acceptance was possible in the available environment.
+
+## 15. Sprint 3 engineering core and platform experiences
+
+The Sprint 3 audit and findings are recorded in [sprint-3-audit.md](sprint-3-audit.md). The audit confirmed that Apply persisted successfully before the UI threw: `fill()` dereferenced a missing `#components` element, although the markup only supplied a `.components` class. It also confirmed the fixed `OUTPUT · 3:1` label. The markup now has the required component root, all visible values and verification rows render from the committed response, the label uses its gear ratio, invalid edits restore the canonical input values, overlapping Apply actions are locked, and asynchronous CAD loads are ignored when their build token or project revision is stale.
+
+Project responses now include calculation formulas, substitutions, assumptions, source note, method version, and calculation revision. Component geometry requests with an outdated `revision` query return HTTP 409 rather than silently serving a different revision. Artifact history shows current/stale entries in Studio; generated files refresh the index after export. STL meshing is run serially to avoid the observed Open CASCADE parallel meshing access violation on this constrained Windows run, using the same documented tessellation tolerances.
+
+The `DesignFamily` contract registers only `spur_gear_pair@1.0`; the registry exposes units/ranges, capabilities, limitations, exporters, calculation dispatch and geometry dispatch. The New Design flow initializes validated defaults in the one active local project, advancing its revision and retaining prior state in history. “Return to demo” restores the default design. It does not provide independent project storage and planned motor, aerospace, robotics and general-CAD areas are unavailable.
+
+Learn is now a working gear lesson with editable inputs sent to `/api/v1/learn/spur-gear/experiment`, which invokes the existing deterministic engineering module and never writes project state. It includes worked formulas, units, a quiz with explanations, the CAD/engineering limitations, and completion stored in versioned browser-local storage. A `TutorProvider` seam is present but no model tutor is configured.
+
+Platform reads the actual FastAPI OpenAPI document, lists registered routes and parameter schemas, and provides local curl/Python/PATCH examples with browser clipboard actions. It explicitly states that the local API is unauthenticated and that hosted APIs, API keys, accounts, quotas, billing, and production security are unavailable.
+
+The PK Intelligence evaluation foundation consists of a versioned JSONL schema and synthetic hand-authored train/validation/test splits, each with provenance and license status, plus a deterministic baseline evaluation harness. The examples are not training data, statistically representative evaluation, independent engineering references, or safety evidence. No fine-tuning or external calls are performed.
+
+The browser inventory remains empty (`apps: []`, `browsers: []`); no browser acceptance test was run. Node tests cover local progress storage, OpenAPI endpoint enumeration, clipboard invocation with a test clipboard, and the markup/Studio synchronization contract. These do not substitute for real-browser interaction.
+
+Sprint 3 verification completed on 2026-10-20:
+
+| Check | Result | Boundary |
+|---|---|---|
+| `npm test` | **51 Python tests passed** and **4 Node frontend contract tests passed**; one existing Starlette/httpx deprecation warning | API, state, calculation, CAD, evaluation, learning, and frontend contract coverage; no browser rendering |
+| `npm run build:web` | Passed; Next.js 16.4.2 compiled, type-checked and generated `/`, `/designs/new`, `/learn`, and `/platform` | Production build only |
+| `npx tsc --noEmit --pretty false -p apps/web/tsconfig.json` | Passed | Standalone TypeScript check |
+| `node --check public/app.js`; `node --check scripts/run.mjs` | Both passed | JavaScript syntax |
+| Live local smoke check | `/`, `/learn`, `/platform`, `/designs/new` returned HTTP 200; family registry and 15-path OpenAPI returned successfully | Used isolated temporary data/artifact directories; no canonical project mutation |
+| Learning experiment reference | 12/30 teeth, module 2 mm, width 12 mm, 8 N·m and 900 rpm produced 2.5 ratio, 42 mm center distance, 360 rpm and 20 N·m ideal torque | Backend deterministic calculation; experiment did not persist project state |
+| Browser acceptance | Not run: CUA browser inventory returned `apps: []`, `browsers: []`; no installed browser runner was available | Visual layout, pointer/keyboard interactions, WebGL rendering, and real download interaction remain unverified |
+
+The single test warning is the existing Starlette/httpx test-client deprecation. These checks establish local code-path behavior and buildability, not browser visual correctness, engineering safety, or deployment readiness.

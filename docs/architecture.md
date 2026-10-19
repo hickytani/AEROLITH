@@ -7,3 +7,17 @@ The current project is intentionally one constrained `spur_gear_pair` family. It
 CAD and report outputs are generated from one loaded `Design` snapshot per request. Each output is atomically written under a filename containing its revision and generator/report version, then recorded with a checksum in `artifacts/artifact-index.json`. `GET /api/v1/artifacts` lists metadata and marks records stale when their revision differs from the current project. `GET /api/v1/artifacts/{filename}` allows retrieval of retained prior outputs, verifies the checksum, and reports stale state in a response header. Current export routes always generate from the current snapshot. Historical outputs are retained as local files; there is no background job or object store.
 
 This remains a constrained local architecture. PostgreSQL, authentication, explicit graph dependency edges, artifact lifecycle controls, and multi-process write coordination are future work. Keep model-provider adapters separate from deterministic calculations. The requirement provider protocol accepts only validated typed proposals and never executes model-generated code.
+
+## Design-family contract
+
+`services/api/aeropkmech/families.py` defines the narrow `DesignFamily` contract and registry. A family provides a stable identifier, display/category metadata, schema version, parameter bounds/units, capabilities, limitations, supported artifact types, validated defaults/state, calculation dispatch, and geometry generation. The registered `spur_gear_pair@1.0` delegates equations to `engineering.py` and CAD generation to `cad.py`; metadata discovery does not mutate a project. Unknown family identifiers and unsupported schema versions return HTTP 422. No other design family is selectable.
+
+`GET /api/v1/design-families` is authoritative for the New Design flow. `POST /api/v1/project/initialize` initializes the registered family with validated defaults and advances the one local project's revision while retaining its old state in history. It is not multi-project storage. `POST /api/v1/project/demo` restores the demo defaults as a new revision. Family registration itself does not create a revision or regenerate artifacts.
+
+## Calculations and learning
+
+Project responses include calculation rows with formula, substitution, assumptions, reference note, method version, status, and design revision. The provenance revision matches the project snapshot used for the calculation and verification response. `POST /api/v1/learn/spur-gear/experiment` runs supplied lesson parameters through the same deterministic gear engineering module without saving them; its provenance identifies an uncommitted experiment and the canonical source revision. Lesson completion is stored in versioned browser `localStorage` only. No cross-device progress sync or connected tutor is implemented. `TutorProvider` is an integration seam; the shipped lesson explanations and calculations remain deterministic and authored.
+
+## Learn and Platform
+
+The App Router exposes `/learn`, `/platform`, and `/designs/new`; Studio remains `/`. Learn contains the implemented gear lesson and uses the experiment endpoint. Platform reads the live FastAPI OpenAPI document at `/api/v1/platform/openapi`, displays actual versioned endpoints and schemas, and provides copyable local examples. There is no hosted API, account system, public key issuance, billing, or public deployment security boundary.

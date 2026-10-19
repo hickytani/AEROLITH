@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.responses import JSONResponse, Response
@@ -22,7 +22,16 @@ from io import BytesIO
 from . import cad, store
 from . import artifacts as artifact_store
 from .domain import Design, EditRequest, InterpretRequest
-from .engineering import derive, validate
+from .engineering import calculation_details, derive, validate
+from .families import (
+    IMPLEMENTED_FAMILIES,
+    PLANNED_FAMILY_AREAS,
+    FamilyInitializationRequest,
+    GearExperimentRequest,
+    UnsupportedDesignFamily,
+    get_family,
+    list_families,
+)
 from .intelligence import extract
 from .verification import VerificationState, summarize
 
@@ -41,8 +50,10 @@ class ArtifactExecutionError(RuntimeError):
 
 
 def response(design: Design) -> dict:
-    verification = {key: item.model_dump(mode="json") for key, item in summarize(design).items()}
-    return {**design.model_dump(mode="json"), "derived": derive(design), "validation": validate(design), "verification": verification}
+    family = get_family(design.family, design.schema_version)
+    family.validate_state(design)
+    verification = {key: item.model_dump(mode="json") for key, item in family.verify(design).items()}
+    return {**design.model_dump(mode="json"), "derived": family.calculate(design), "calculations": calculation_details(design), "validation": validate(design), "verification": verification}
 
 
 @app.exception_handler(store.ProjectStateError)
@@ -65,9 +76,73 @@ def health():
     return {"ok": True, "service": "AeroPKmech API", "kernel": "CadQuery / Open CASCADE", "state": "local-file"}
 
 
+@app.get("/api/v1/platform/openapi", include_in_schema=False)
+def platform_openapi():
+    """Live API contract used by the local developer portal."""
+    return app.openapi()
+
+
+@app.get("/api/v1/design-families")
+def design_families():
+    return {
+        "families": [item.__dict__ for item in list_families()],
+        "planned_areas": list(PLANNED_FAMILY_AREAS),
+        "persistence": "single local project; initialization replaces the active state while retaining its revision history",
+    }
+
+
 @app.get("/api/v1/project")
 def get_project():
     return response(store.load())
+
+
+@app.post("/api/v1/project/initialize")
+def initialize_project(request: FamilyInitializationRequest):
+    try:
+        family = get_family(request.family_id, request.schema_version)
+    except UnsupportedDesignFamily as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    current = store.load()
+    candidate = family.default_design()
+    candidate.id = f"local-{uuid.uuid4().hex[:12]}"
+    candidate.revision = current.revision + 1
+    candidate.history = [*current.history, {"revision": current.revision, "changed_at": current.updated_at, "design": current.model_dump(mode="json")}]
+    candidate.updated_at = datetime.now(timezone.utc).isoformat()
+    family.validate_state(candidate)
+    store.save(candidate)
+    return response(candidate)
+
+
+@app.post("/api/v1/project/demo")
+def restore_demo_project():
+    current = store.load()
+    candidate = store.default_design()
+    candidate.revision = current.revision + 1
+    candidate.history = [*current.history, {"revision": current.revision, "changed_at": current.updated_at, "design": current.model_dump(mode="json")}]
+    candidate.updated_at = datetime.now(timezone.utc).isoformat()
+    store.save(candidate)
+    return response(candidate)
+
+
+@app.post("/api/v1/learn/spur-gear/experiment")
+def gear_experiment(parameters: GearExperimentRequest):
+    """Evaluate lesson inputs with the real deterministic gear equations, without persistence."""
+    current = store.load()
+    design = IMPLEMENTED_FAMILIES["spur_gear_pair"].default_design()
+    values = parameters.model_dump()
+    design.components[0].teeth = values["pinion_teeth"]
+    design.components[1].teeth = values["gear_teeth"]
+    for key in ("module_mm", "face_width_mm", "input_torque_Nm", "input_speed_rpm"):
+        setattr(design.requirements, key, values[key])
+    design.requirements.gear_ratio = values["gear_teeth"] / values["pinion_teeth"]
+    design.revision = current.revision
+    design = Design.model_validate(design.model_dump(mode="json"))
+    details = calculation_details(design)
+    details["provenance"].update({"design_revision": None, "source_revision": current.revision, "context": "uncommitted learning experiment"})
+    for item in details["results"]:
+        item["design_revision"] = None
+        item["source_revision"] = current.revision
+    return {"parameters": values, "derived": derive(design), "calculations": details}
 
 
 @app.patch("/api/v1/project")
@@ -127,8 +202,14 @@ def export_step():
 
 
 @app.get("/api/v1/geometry/{component_id}.stl")
-def component_geometry(component_id: Literal["pinion", "gear"]):
+def component_geometry(component_id: Literal["pinion", "gear"], revision: int | None = Query(default=None, ge=1)):
     design = store.load()
+    if revision is not None and revision != design.revision:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Requested geometry revision {revision} is not current; project revision is {design.revision}.",
+            headers={"X-Design-Revision": str(design.revision)},
+        )
     ARTIFACTS.mkdir(parents=True, exist_ok=True)
     temporary = ARTIFACTS / f".generating-{uuid.uuid4().hex}.stl"
     try:
