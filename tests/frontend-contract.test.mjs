@@ -6,6 +6,7 @@ import { loadLessonProgress, saveLessonProgress } from '../apps/web/app/lib/lear
 import { copyText, listOpenApiOperations } from '../apps/web/app/lib/platform.mjs';
 import { loadComponentMesh, loadComponentSet, MeshLoadError, validateMeshGeometry } from '../public/mesh-loader.js';
 import { cameraFitPose, unionBounds } from '../public/camera-fit.js';
+import { waitForApiReady } from '../scripts/api-readiness.mjs';
 
 function tetrahedronStl() {
   const triangles = [
@@ -25,6 +26,48 @@ function tetrahedronStl() {
   });
   return bytes;
 }
+
+test('combined-service readiness waits through startup refusal before allowing the web process to start', async () => {
+  let requests = 0;
+  const health = await waitForApiReady({
+    url: 'http://127.0.0.1:8000/api/v1/health',
+    intervalMs: 0,
+    timeoutMs: 250,
+    fetchImpl: async () => {
+      requests += 1;
+      if (requests === 1) throw new TypeError('fetch failed: ECONNREFUSED');
+      if (requests === 2) return new Response('{}', { status: 503 });
+      return Response.json({ ok: true, service: 'AeroPKmech API' });
+    },
+  });
+  assert.equal(health.ok, true);
+  assert.equal(requests, 3);
+});
+
+test('combined-service readiness reports a clear error when the API stays unavailable', async () => {
+  await assert.rejects(
+    waitForApiReady({
+      url: 'http://127.0.0.1:8000/api/v1/health',
+      intervalMs: 0,
+      timeoutMs: 10,
+      fetchImpl: async () => { throw new TypeError('fetch failed: ECONNREFUSED'); },
+    }),
+    /API did not become ready.*ECONNREFUSED/,
+  );
+});
+
+test('combined-service readiness exits promptly if the API process exits during startup', async () => {
+  const controller = new AbortController();
+  const waiting = waitForApiReady({
+    url: 'http://127.0.0.1:8000/api/v1/health',
+    intervalMs: 0,
+    timeoutMs: 5_000,
+    fetchImpl: async (_url, { signal }) => new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })),
+    signal: controller.signal,
+  });
+  controller.abort();
+  await assert.rejects(waiting, /API readiness check stopped/);
+});
 
 async function meshResponse(componentId = 'pinion', revision = 4, payload = tetrahedronStl()) {
   const digest = await crypto.subtle.digest('SHA-256', payload);
@@ -153,14 +196,20 @@ test('Platform copy interaction calls the browser clipboard API', async () => {
 });
 
 test('Studio regression contract keeps the component element and dynamic ratio in sync', async () => {
-  const [markup, script, nextConfig] = await Promise.all([
+  const [markup, script, nextConfig, workspaceShell, studioCss] = await Promise.all([
     readFile(new URL('../public/index.html', import.meta.url), 'utf8'),
     readFile(new URL('../public/app.js', import.meta.url), 'utf8'),
     readFile(new URL('../apps/web/next.config.mjs', import.meta.url), 'utf8'),
+    readFile(new URL('../apps/web/app/WorkspaceShell.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../public/style.css', import.meta.url), 'utf8'),
   ]);
   assert.match(markup, /class="components" id="components"/);
   assert.match(markup, /href="\/learn"/);
   assert.match(markup, /href="\/platform"/);
+  const markupIds = new Set([...markup.matchAll(/\bid="([^"]+)"/g)].map(([, id]) => id));
+  const appRequiredIds = [...script.matchAll(/required\('([^']+)'\)/g)].map(([, id]) => id);
+  assert.deepEqual([...new Set(appRequiredIds.filter((id) => !markupIds.has(id)))], [], 'every required Studio element must exist in the HTML');
+  assert.match(studioCss, /@media \(min-width: 1101px\)\s*\{\s*\.stage \{[^}]*height: min\(720px, calc\(100vh - 280px\)\)/);
   assert.match(script, /required\('gear-label'\)\.textContent = `OUTPUT · \$\{derived\.gear_ratio\.toFixed\(2\)\}:1`/);
   assert.doesNotMatch(script, /OUTPUT · 3:1/);
   assert.match(script, /sequence !== buildSequence \|\| project\.revision !== revision/);
@@ -169,6 +218,8 @@ test('Studio regression contract keeps the component element and dynamic ratio i
   assert.match(script, /loadComponentSet/);
   assert.match(script, /geometry-errors/);
   assert.match(script, /disposeStudio/);
+  assert.match(workspaceShell, /detail: \{ instance \}/);
+  assert.match(script, /event\.detail\?\.instance !== studioInstance/);
   assert.match(nextConfig, /source:\s*'\/mesh-loader\.js'/);
   assert.match(nextConfig, /source:\s*'\/camera-fit\.js'/);
 });

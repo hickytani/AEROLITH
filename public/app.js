@@ -5,6 +5,7 @@ import { cameraFitPose, unionBounds } from './camera-fit.js';
 
 const api = '/api/v1';
 const VIEWER_UNITS_PER_MM = 1;
+const studioInstance = new URL(import.meta.url).searchParams.get('instance');
 const byId = (id) => document.getElementById(id);
 let project;
 let scene;
@@ -91,7 +92,7 @@ function init() {
   renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
 }
 
-function disposeStudio() {
+function disposeStudio({ keepLifecycle = false } = {}) {
   disposed = true;
   buildSequence += 1;
   resizeObserver?.disconnect();
@@ -106,7 +107,11 @@ function disposeStudio() {
   sceneHelpers = [];
   renderer?.dispose();
   renderer?.domElement.remove();
-  window.removeEventListener('aeropkmech:studio-dispose', disposeStudio);
+  if (!keepLifecycle) {
+    window.removeEventListener('aeropkmech:studio-dispose', handleStudioDispose);
+    window.removeEventListener('pagehide', handlePageHide);
+    window.removeEventListener('pageshow', handlePageShow);
+  }
   controls = null;
   renderer = null;
   camera = null;
@@ -114,7 +119,25 @@ function disposeStudio() {
   resizeObserver = null;
 }
 
-window.addEventListener('aeropkmech:studio-dispose', disposeStudio);
+function handleStudioDispose(event) {
+  if (event.detail?.instance !== studioInstance) return;
+  disposeStudio();
+}
+
+function handlePageHide() {
+  disposeStudio({ keepLifecycle: true });
+}
+
+function handlePageShow(event) {
+  if (!event.persisted) return;
+  disposed = false;
+  window.addEventListener('aeropkmech:studio-dispose', handleStudioDispose);
+  load();
+}
+
+window.addEventListener('aeropkmech:studio-dispose', handleStudioDispose);
+window.addEventListener('pagehide', handlePageHide);
+window.addEventListener('pageshow', handlePageShow);
 
 function fitView(view = 'iso') {
   if (!project || !camera) return;
@@ -431,10 +454,11 @@ function pick(event) {
 }
 
 for (const button of document.querySelectorAll('.component-select')) {
-  button.addEventListener('click', () => setSelected(button.dataset.id));
+  button.addEventListener('click', () => { if (!disposed) setSelected(button.dataset.id); });
 }
 for (const button of document.querySelectorAll('.eye')) {
   button.addEventListener('click', () => {
+    if (disposed) return;
     const id = button.dataset.visibility;
     visibilityById[id] = !visibilityById[id];
     if (meshes[id]) meshes[id].visible = visibilityById[id];
@@ -444,19 +468,13 @@ for (const button of document.querySelectorAll('.eye')) {
     fitView();
   });
 }
-required('apply').addEventListener('click', applyChanges);
-required('restore-demo').addEventListener('click', restoreDemo);
+required('apply').addEventListener('click', () => { if (!disposed) applyChanges(); });
+required('restore-demo').addEventListener('click', () => { if (!disposed) restoreDemo(); });
 required('reset').addEventListener('click', () => fitView());
 for (const button of document.querySelectorAll('[data-view]')) button.addEventListener('click', () => fitView(button.dataset.view));
-window.addEventListener('pagehide', disposeStudio);
-window.addEventListener('pageshow', (event) => {
-  if (!event.persisted) return;
-  disposed = false;
-  load();
-});
 for (const link of document.querySelectorAll('.exports > a')) {
   link.addEventListener('click', async (event) => {
-    if (!project) return;
+    if (disposed || !project) return;
     event.preventDefault();
     const previousText = link.textContent;
     link.textContent = 'Generating for current revision…';

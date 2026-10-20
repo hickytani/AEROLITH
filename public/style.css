@@ -113,6 +113,11 @@ button:disabled { opacity: .58; cursor: wait; }
 .checks p { display: grid; grid-template-columns: 12px minmax(0,1fr) auto; align-items: start; gap: 7px; margin: 12px 0; color: #344b5c; font-size: 13px; line-height: 1.45; }
 .checks b { color: #405666; font: 600 12px/1.4 var(--font-mono); }
 .status { width: 9px; height: 9px; margin-top: 4px; border-radius: 50%; background: #74838c; }
+
+@media (min-width: 1101px) {
+  .stage { align-self: start; height: min(720px, calc(100vh - 280px)); min-height: 500px; }
+  #viewport { min-height: 0; }
+}
 .status.passed { background: #24724f; }
 .status.warning, .status.partial { background: #9a6915; }
 .status.failed, .status.execution_error { background: #94372e; }
