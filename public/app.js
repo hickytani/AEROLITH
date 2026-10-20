@@ -19,6 +19,10 @@ let buildSequence = 0;
 let applying = false;
 let disposed = false;
 let resizeObserver;
+let activeSpecification = null;
+let specificationRevision = null;
+let specificationCommitted = false;
+let specificationRequestSequence = 0;
 const visibilityById = { pinion: true, gear: true };
 
 function required(id) {
@@ -277,6 +281,237 @@ function textElement(tag, text, className) {
   return element;
 }
 
+const specificationInputs = {
+  pinion_teeth: { label: 'Input pinion teeth', min: 8, max: 80, step: 1 },
+  gear_teeth: { label: 'Driven gear teeth', min: 8, max: 120, step: 1 },
+  module_mm: { label: 'Module', min: 0.5, max: 6, step: 0.1 },
+  face_width_mm: { label: 'Face width', min: 2, max: 60, step: 0.1 },
+  input_torque_Nm: { label: 'Input torque', min: 0.000001, step: 'any' },
+  input_speed_rpm: { label: 'Input speed', min: 0.000001, step: 'any' },
+  occupant_capacity: { label: 'Seating capacity', min: 1, max: 12, step: 1 },
+  overall_length_mm: { label: 'Overall length', min: 1500, max: 12000, step: 10 },
+  overall_width_mm: { label: 'Overall width', min: 800, max: 4000, step: 10 },
+  target_range_km: { label: 'Target range', min: 1, max: 5000, step: 1 },
+};
+const gearSpecificationFields = ['pinion_teeth', 'gear_teeth', 'module_mm', 'face_width_mm', 'input_torque_Nm', 'input_speed_rpm'];
+
+function specificationValues() {
+  if (activeSpecification?.intent !== 'SUPPORTED_SPUR_GEAR_PAIR') return null;
+  const values = {};
+  for (const name of gearSpecificationFields) {
+    const inputSpec = specificationInputs[name];
+    const input = required(`spec-${name}`);
+    if (!input.value.trim()) return null;
+    const value = Number(input.value);
+    if (!Number.isFinite(value) || value < inputSpec.min || (inputSpec.max !== undefined && value > inputSpec.max)) return null;
+    if (inputSpec.step === 1 && !Number.isInteger(value)) return null;
+    values[name] = value;
+  }
+  return values;
+}
+
+function updateSpecificationCommitState() {
+  if (!activeSpecification) return;
+  const unresolvedList = byId('specification-unresolved-inputs');
+  const unresolvedHeading = byId('specification-heading-unresolved-inputs');
+  if (unresolvedList && unresolvedHeading) {
+    const parameterQuestion = (question) => activeSpecification.parameters.some((item) =>
+      question === `Provide ${item.name.replaceAll('_', ' ')}` || question === `Provide ${item.meaning.toLowerCase()}`);
+    const unresolved = activeSpecification.unresolved_questions.filter((question) => !parameterQuestion(question));
+    for (const parameter of activeSpecification.parameters) {
+      const definition = specificationInputs[parameter.name];
+      if (!definition) continue;
+      const input = byId(`spec-${parameter.name}`);
+      const value = Number(input?.value);
+      const complete = Boolean(input?.value.trim()) && Number.isFinite(value) && value >= definition.min
+        && (definition.max === undefined || value <= definition.max)
+        && (definition.step !== 1 || Number.isInteger(value));
+      if (!complete) unresolved.push(`Provide ${parameter.meaning.toLowerCase()}`);
+    }
+    unresolvedList.replaceChildren(...unresolved.map((item) => textElement('li', item)));
+    unresolvedList.hidden = unresolved.length === 0;
+    unresolvedHeading.hidden = unresolved.length === 0;
+  }
+  for (const parameter of activeSpecification.parameters) {
+    const input = byId(`spec-${parameter.name}`);
+    if (!input) continue;
+    const meta = input.parentElement.querySelector('small');
+    if (!meta) continue;
+    const unchanged = (parameter.initial_value === null ? '' : String(parameter.initial_value)) === input.value;
+    const entered = input.value.trim() ? Number(input.value) : null;
+    if (entered !== null && Number.isFinite(entered)) {
+      parameter.value = entered;
+      parameter.source = unchanged ? parameter.source : 'user-provided';
+      parameter.status = unchanged ? parameter.status : 'PROPOSED';
+    } else if (entered === null) {
+      parameter.value = null;
+      parameter.source = 'missing';
+      parameter.status = 'MISSING';
+    }
+    meta.textContent = unchanged
+      ? `${parameter.source.toUpperCase()} · ${parameter.status}`
+      : input.value ? 'USER EDITED · REVIEW REQUIRED' : 'MISSING · REQUIRED';
+  }
+  if (activeSpecification.intent === 'SUPPORTED_SPUR_GEAR_PAIR') {
+    const pinion = Number(byId('spec-pinion_teeth')?.value);
+    const gear = Number(byId('spec-gear_teeth')?.value);
+    const ratio = byId('spec-gear_ratio');
+    if (ratio && Number.isInteger(pinion) && Number.isInteger(gear) && pinion > 0 && gear > 0) {
+      ratio.textContent = `${(gear / pinion).toFixed(4)} ratio · derived from reviewed tooth counts`;
+    } else if (ratio) ratio.textContent = 'Not available until both tooth counts are supplied';
+    for (const connection of activeSpecification.connections) {
+      const relation = byId(`spec-connection-${connection.id}`);
+      if (relation) relation.textContent = `${connection.source_component} → ${connection.target_component} · ${connection.relationship} · ${Number.isInteger(pinion) && Number.isInteger(gear) && pinion > 0 && gear > 0 ? 'PROPOSED' : 'NEEDS_INPUT'} · refs: ${connection.parameter_refs.join(', ')}`;
+    }
+  }
+  const button = byId('specification-commit');
+  const readiness = byId('specification-readiness');
+  if (!button || !readiness) return;
+  const ready = activeSpecification.intent === 'SUPPORTED_SPUR_GEAR_PAIR'
+    && activeSpecification.conflicts.length === 0
+    && activeSpecification.unsupported_requests.length === 0
+    && specificationValues() !== null
+    && !applying
+    && !specificationCommitted;
+  button.disabled = !ready;
+  readiness.textContent = ready
+    ? `Complete proposal · based on project revision ${specificationRevision}. Review the values, then commit explicitly.`
+    : activeSpecification.intent !== 'SUPPORTED_SPUR_GEAR_PAIR'
+      ? 'No supported design can be generated from this request.'
+      : activeSpecification.conflicts.length
+        ? 'Resolve the interpretation conflict in the request and interpret it again.'
+        : 'Supply all required values within the listed ranges before committing.';
+}
+
+function renderSpecification(specification) {
+  activeSpecification = specification;
+  specificationRevision = project?.revision ?? null;
+  specificationCommitted = false;
+  const panel = required('specification-review');
+  panel.replaceChildren();
+  panel.hidden = false;
+  panel.append(textElement('h3', 'Reviewable system specification'));
+  panel.append(textElement('p', `Schema ${specification.schema_version} · ${specification.provider} · uncommitted proposal`, 'specification-meta'));
+  panel.append(textElement('p', specification.intent === 'SUPPORTED_SPUR_GEAR_PAIR'
+    ? `Supported family: ${specification.family_id} · schema ${specification.family_schema_version}`
+    : `${specification.system_name} · ${specification.generation_status}`, 'specification-family'));
+
+  const parameterList = document.createElement('div');
+  parameterList.className = 'specification-parameters';
+  for (const parameter of specification.parameters) {
+    parameter.initial_value = parameter.value;
+    const definition = specificationInputs[parameter.name];
+    const row = document.createElement('label');
+    row.className = `specification-parameter${parameter.status === 'INVALID' ? ' spec-invalid' : ''}`;
+    row.append(textElement('span', `${parameter.meaning} · ${parameter.unit}`));
+    row.append(textElement('small', `${parameter.source.toUpperCase()} · ${parameter.status}`));
+    if (definition && parameter.unit) {
+      const input = document.createElement('input');
+      input.id = `spec-${parameter.name}`;
+      input.type = 'number';
+      input.min = String(definition.min);
+      if (definition.max !== undefined) input.max = String(definition.max);
+      input.step = String(definition.step);
+      input.value = parameter.value === null ? '' : String(parameter.value);
+      input.placeholder = 'Required · not inferred';
+      input.setAttribute('aria-label', `${parameter.meaning} in ${parameter.unit}`);
+      input.addEventListener('input', updateSpecificationCommitState);
+      row.append(input);
+    } else {
+      const output = textElement('output', parameter.value === null ? 'Not available until inputs are supplied' : `${parameter.value} ${parameter.unit}`);
+      output.id = `spec-${parameter.name}`;
+      row.append(output);
+    }
+    if (parameter.evidence) row.append(textElement('small', `Evidence: “${parameter.evidence}”`, 'spec-evidence'));
+    parameterList.append(row);
+  }
+  panel.append(parameterList);
+
+  if (specification.components.length) {
+    panel.append(textElement('h4', 'Proposed component structure'));
+    const components = document.createElement('ul');
+    for (const component of specification.components) {
+      components.append(textElement('li', `${component.name} (${component.id}) · ${component.kind} · ${component.role} · parent: ${component.parent_id || 'none'} · parameters: ${component.parameter_refs.join(', ') || 'not assigned'} · ${component.status}${component.generator_available ? '' : ' · no geometry generator'}`));
+    }
+    panel.append(components);
+    for (const connection of specification.connections) {
+      const relation = textElement('p', `${connection.source_component} → ${connection.target_component} · ${connection.relationship} · ${connection.status} · refs: ${connection.parameter_refs.join(', ')}`);
+      relation.id = `spec-connection-${connection.id}`;
+      panel.append(relation);
+    }
+  }
+  for (const [title, entries, className] of [
+    ['Unresolved inputs', specification.unresolved_questions, 'spec-warning'],
+    ['Conflicts', specification.conflicts, 'spec-error'],
+    ['Input range issues', specification.validation_issues || [], 'spec-error'],
+    ['Unsupported scope', specification.unsupported_requests, 'spec-warning'],
+    ['Explicit assumptions', specification.assumptions, ''],
+    ['Known limitations', specification.limitations, 'spec-warning'],
+    ['Available artifacts after commit', specification.supported_artifacts, ''],
+  ]) {
+    if (!entries.length) continue;
+    const sectionId = title.toLowerCase().replaceAll(/[^a-z0-9]+/g, '-');
+    const heading = textElement('h4', title);
+    heading.id = `specification-heading-${sectionId}`;
+    panel.append(heading);
+    const list = document.createElement('ul');
+    if (title === 'Unresolved inputs') list.id = 'specification-unresolved-inputs';
+    list.className = className;
+    entries.forEach((entry) => list.append(textElement('li', entry)));
+    panel.append(list);
+  }
+  panel.append(textElement('p', '', 'specification-readiness'));
+  panel.lastChild.id = 'specification-readiness';
+  const commit = textElement('button', 'Commit reviewed values as a new revision', 'specification-commit');
+  commit.id = 'specification-commit';
+  commit.type = 'button';
+  commit.addEventListener('click', commitSpecification);
+  panel.append(commit);
+  updateSpecificationCommitState();
+}
+
+async function interpretSpecification() {
+  if (applying) return;
+  const text = required('request-text').value.trim();
+  const status = required('intake-result');
+  const button = required('parse-request');
+  if (!text) {
+    status.textContent = 'Enter a request before interpreting it.';
+    return;
+  }
+  button.disabled = true;
+  const sequence = ++specificationRequestSequence;
+  status.textContent = 'Interpreting locally with deterministic patterns…';
+  try {
+    const specification = await request('/specifications/propose', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }),
+    });
+    if (disposed || sequence !== specificationRequestSequence) return;
+    renderSpecification(specification);
+    status.textContent = 'Proposal generated locally. It has not changed the committed project.';
+  } catch (error) {
+    if (!disposed && sequence === specificationRequestSequence) status.textContent = `Could not interpret request: ${error.message}`;
+  } finally {
+    if (sequence === specificationRequestSequence) button.disabled = false;
+  }
+}
+
+async function commitSpecification() {
+  if (!activeSpecification || !project || !specificationValues()) return;
+  const values = specificationValues();
+  for (const [field, inputId] of Object.entries({
+    pinion_teeth: 'pinion', gear_teeth: 'gear', module_mm: 'module', face_width_mm: 'width',
+    input_torque_Nm: 'torque', input_speed_rpm: 'speed',
+  })) required(inputId).value = String(values[field]);
+  const committed = await applyChanges(values, specificationRevision);
+  if (committed && !disposed) {
+    specificationCommitted = true;
+    required('intake-result').textContent = `Reviewed proposal committed as project revision ${project.revision}. Geometry and calculations are rebuilding from that revision.`;
+    byId('specification-commit').textContent = `Committed as revision ${project.revision}`;
+    updateSpecificationCommitState();
+  }
+}
+
 function fill() {
   if (!project) return;
   const requirements = project.requirements;
@@ -372,7 +607,7 @@ async function load() {
   }
 }
 
-async function applyChanges() {
+async function applyChanges(proposalValues = null, expectedRevision = null) {
   if (applying || !project) return;
   applying = true;
   const previousRevision = project.revision;
@@ -382,7 +617,7 @@ async function applyChanges() {
   for (const input of document.querySelectorAll('.rail input')) input.disabled = true;
   required('apply').disabled = true;
   try {
-    const body = {
+    const body = proposalValues || {
       pinion_teeth: Number(required('pinion').value),
       gear_teeth: Number(required('gear').value),
       module_mm: Number(required('module').value),
@@ -390,6 +625,7 @@ async function applyChanges() {
       input_torque_Nm: Number(required('torque').value),
       input_speed_rpm: Number(required('speed').value),
     };
+    body.expected_revision = expectedRevision ?? project.revision;
     const committed = await request('/project', {
       method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
     });
@@ -399,8 +635,9 @@ async function applyChanges() {
     fill();
     build();
     loadArtifacts(project.revision);
+    return true;
   } catch (error) {
-    if (disposed) return;
+    if (disposed) return false;
     const message = error.message;
     // A network failure can happen after the server committed. Read canonical state before showing the last result.
     try {
@@ -416,6 +653,7 @@ async function applyChanges() {
       // Retain the last successfully loaded client snapshot when the API cannot be read.
     }
     required('error').textContent = message;
+    return false;
   } finally {
     applying = false;
     if (!disposed) fill();
@@ -507,5 +745,14 @@ for (const link of document.querySelectorAll('.exports > a')) {
     }
   });
 }
+
+required('parse-request').addEventListener('click', () => { if (!disposed) interpretSpecification(); });
+required('request-text').addEventListener('input', () => {
+  specificationRequestSequence += 1;
+  required('parse-request').disabled = false;
+  activeSpecification = null;
+  required('specification-review').hidden = true;
+  required('intake-result').textContent = 'Request changed. Interpret it again to create a fresh, uncommitted proposal.';
+});
 
 load();

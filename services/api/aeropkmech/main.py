@@ -32,7 +32,7 @@ from .families import (
     get_family,
     list_families,
 )
-from .intelligence import extract
+from .intelligence import extract, propose_specification
 from .verification import VerificationState, summarize
 
 app = FastAPI(title="AeroPKmech API", version="0.2.0", description="Versioned educational spur gear design workflow")
@@ -149,6 +149,13 @@ def gear_experiment(parameters: GearExperimentRequest):
 def edit_project(edit: EditRequest):
     current = store.load()
     values = edit.model_dump(exclude_none=True)
+    expected_revision = values.pop("expected_revision", None)
+    if expected_revision is not None and expected_revision != current.revision:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Project revision advanced from {expected_revision} to {current.revision}. Reload and review the current design before applying edits.",
+            headers={"X-Design-Revision": str(current.revision)},
+        )
     candidate = current.model_copy(deep=True)
     candidate.history.append({"revision": current.revision, "changed_at": current.updated_at, "design": current.model_dump(mode="json")})
     if "pinion_teeth" in values:
@@ -169,6 +176,12 @@ def edit_project(edit: EditRequest):
 @app.post("/api/v1/project/interpret")
 async def interpret(request: InterpretRequest):
     return (await extract(request.text)).model_dump(mode="json")
+
+
+@app.post("/api/v1/specifications/propose")
+def propose_project_specification(request: InterpretRequest):
+    """Return a schema-validated, uncommitted prompt-to-system proposal."""
+    return propose_specification(request.text).model_dump(mode="json")
 
 
 @app.get("/api/v1/export/stl")

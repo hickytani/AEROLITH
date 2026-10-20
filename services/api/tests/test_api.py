@@ -127,6 +127,48 @@ def test_revision_geometry_exports_and_requirement_intake(tmp_path, monkeypatch)
     assert client.get("/camera-fit.js").status_code == 200
 
 
+def test_specification_proposal_is_schema_valid_and_revision_guard_is_optimistic(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(store, "STATE_FILE", tmp_path / "data" / "project.json")
+    client = TestClient(app)
+    original = client.get("/api/v1/project").json()
+    proposal = client.post("/api/v1/specifications/propose", json={
+        "text": "External spur gear pair: pinion 18 teeth, driven gear 54 teeth, module 2 mm, "
+        "face width 12 mm, input torque 8 N·m, input speed 900 rpm"
+    })
+    assert proposal.status_code == 200
+    assert proposal.json()["schema_version"] == "1.0"
+    assert proposal.json()["can_commit"] is True
+    assert client.get("/api/v1/project").json() == original
+
+    changed = client.patch("/api/v1/project", json={"gear_teeth": 60, "expected_revision": original["revision"]})
+    assert changed.status_code == 200
+    conflict = client.patch("/api/v1/project", json={
+        "module_mm": 2.5, "expected_revision": original["revision"],
+    })
+    assert conflict.status_code == 409
+    assert conflict.headers["x-design-revision"] == str(original["revision"] + 1)
+    assert client.get("/api/v1/project").json()["revision"] == original["revision"] + 1
+
+
+def test_ev_specification_endpoint_returns_conceptual_architecture_without_committing(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(store, "STATE_FILE", tmp_path / "data" / "project.json")
+    client = TestClient(app)
+    original = client.get("/api/v1/project").json()
+    result = client.post("/api/v1/specifications/propose", json={
+        "text": "Generate a two-seater sports car, electric powered, 4.2 m long, 1.8 m wide, with a 300 km range. Include necessary mechanical and electrical systems."
+    })
+    assert result.status_code == 200
+    specification = result.json()
+    assert specification["intent"] == "CONCEPTUAL_ELECTRIC_VEHICLE"
+    assert specification["can_commit"] is False
+    assert all(node["generator_available"] is False for node in specification["components"])
+    assert any(node["id"] == "electric-vehicle" and node["kind"] == "assembly" for node in specification["components"])
+    assert specification["supported_artifacts"] == []
+    assert client.get("/api/v1/project").json() == original
+
+
 def test_component_mesh_generation_rejects_revision_change_during_build(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(store, "STATE_FILE", tmp_path / "data" / "project.json")

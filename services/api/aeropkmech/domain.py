@@ -49,6 +49,7 @@ class Design(BaseModel):
 
 class EditRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    expected_revision: int | None = Field(default=None, ge=1)
     pinion_teeth: int | None = Field(default=None, ge=8, le=80)
     gear_teeth: int | None = Field(default=None, ge=8, le=120)
     input_torque_Nm: float | None = Field(default=None, gt=0)
@@ -58,7 +59,7 @@ class EditRequest(BaseModel):
 
     @model_validator(mode="after")
     def at_least_one_edit(self) -> "EditRequest":
-        if not self.model_dump(exclude_none=True):
+        if not self.model_dump(exclude_none=True, exclude={"expected_revision"}):
             raise ValueError("At least one design field must be provided.")
         return self
 

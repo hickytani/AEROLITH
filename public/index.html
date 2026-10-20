@@ -21,7 +21,7 @@
     <section class="workspace">
       <aside class="rail">
         <div class="railhead"><span>01</span><b>Design inputs</b><small>EDITABLE · mm / N / s</small></div>
-        <div class="intake"><textarea id="request-text" rows="3" placeholder="Describe a spur gear pair…"></textarea><button id="parse-request">Extract requirements</button><p id="intake-result">Pattern based · review before applying</p></div>
+        <div class="intake"><label for="request-text">Describe an engineering system</label><textarea id="request-text" rows="3" maxlength="4000" placeholder="Describe an external spur gear pair, with tooth counts, module, face width, input torque and speed…"></textarea><button id="parse-request" type="button">Interpret request</button><p id="intake-result" role="status">Local deterministic extraction · no model is connected</p><section id="specification-review" class="specification-review" aria-live="polite" hidden></section></div>
         <label>Pinion teeth<input id="pinion" type="number" min="8" max="80" step="1" disabled></label>
         <label>Driven gear teeth<input id="gear" type="number" min="8" max="120" step="1" disabled></label>
         <label>Module<span class="unit">mm</span><input id="module" type="number" min="0.5" max="6" step="0.1" disabled></label>

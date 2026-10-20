@@ -26,6 +26,7 @@ Open the workspace, change the pinion or gear tooth count, then select **Apply c
 - `PATCH /api/v1/project` with numeric fields `pinion_teeth`, `gear_teeth`, `module_mm`, `face_width_mm`, `input_torque_Nm`, `input_speed_rpm`
 - `GET /api/v1/design-families`, `POST /api/v1/project/initialize`, and `POST /api/v1/project/demo`
 - `POST /api/v1/project/interpret` returns a deterministic typed proposal with evidence, missing inputs and conflicts; no LLM extraction is claimed
+- `POST /api/v1/specifications/propose` returns a versioned reviewable specification: complete spur-gear prompts can be reviewed and applied; electric-vehicle prompts receive a conceptual subsystem outline explicitly marked without geometry generators
 - `POST /api/v1/learn/spur-gear/experiment` calculates uncommitted lesson inputs with the same engineering core
 - `GET /api/v1/export/stl`
 - `GET /api/v1/export/step`

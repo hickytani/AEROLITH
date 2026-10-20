@@ -211,3 +211,11 @@ The follow-up was reproduced and verified in installed headless Google Chrome. T
 The fix supplies the missing element, scopes cleanup to one module instance, limits desktop viewport height, and gates Next startup on API health. Chrome rendered both current-revision meshes at 1440×900 and 1280×720; camera presets, orbit/pan/zoom, selection/visibility, one 12/30 edit, and persistence after refresh passed. The screenshot evidence is stored locally in ignored `artifacts/p0-studio-accepted.png` and `artifacts/p0-studio-1280x720.png`. The only browser HTTP errors were automatic favicon requests (404).
 
 Final incident verification: `npm test` passed **53 Python and 12 Node tests** (one existing Starlette/httpx deprecation warning); `npm run build:web`, standalone TypeScript, and JavaScript syntax checks passed. The pre-existing `apps/web/next-env.d.ts` modification was preserved outside the incident changes.
+
+## 18. Prompt-to-system generation milestone
+
+The Studio intake now calls a versioned, read-only proposal API and renders provenance, values, hierarchy, connections, unresolved inputs, conflicts, range issues, assumptions, limitations, and artifact availability. Complete spur-gear proposals can be explicitly reviewed and committed with an optimistic revision check. The former unhandled prompt button is connected to this flow.
+
+For the supplied two-seat electric sports-car request, deterministic extraction records two occupants, 4,200 mm length, 1,800 mm width, 300 km target range, and electric propulsion. It returns a conceptual subsystem tree and typed interfaces. Automotive nodes are explicitly `CONCEPTUAL_ONLY` and have no geometry generator; no vehicle CAD, calculations, battery sizing, mass, BOM, or artifacts are claimed. A real vehicle design family remains future work and needs defined assumptions plus independently checked engineering models.
+
+Milestone verification: `npm test` passed **62 Python and 13 Node tests** with one existing Starlette/httpx deprecation warning; `npm run build:web`, standalone TypeScript, syntax checks for the three Studio scripts, and `git diff --check` passed. The new prompt display was not visually reviewed in a browser. Detailed scope and verification are in [prompt-to-system-generation.md](prompt-to-system-generation.md). No commit or push was made for this milestone.

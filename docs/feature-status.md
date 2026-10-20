@@ -5,8 +5,10 @@ Status definitions: **Implemented** is present in this demonstrator; **Partial**
 | Area / feature | Status | Scope |
 |---|---|---|
 | Design-family contract | Partial | Typed registry contains only validated `spur_gear_pair@1.0`; metadata and capabilities are API-discoverable. No second family is implemented. |
+| Prompt-to-system specification | Partial | `/api/v1/specifications/propose` returns schema-versioned parameters, provenance, assumptions, unresolved inputs, a component hierarchy, and relationships. A complete spur gear pair can be reviewed and committed; an electric vehicle gets a conceptual rule-based hierarchy only, with no claimed CAD or calculations. No LLM is connected. |
+| Electric vehicle decomposition | Conceptual only | A narrow prompt classifier recognizes electric road-vehicle requests and surfaces chassis, running gear, propulsion, thermal, electrical, and supervisory groups. Every vehicle node is marked `CONCEPTUAL_ONLY` with `generator_available: false`; no vehicle design, CAD, BOM quantities, mass estimate, or performance result is generated. |
 | New Design | Partial | Registry-driven initialization for the gear family; replaces the single active local project as a new revision and preserves revision history. Not independent multi-project storage. |
-| Natural-language requirement extraction | Partial | Deterministic family-scoped parser extracts typed inputs and explicit evidence; reports missing/conflicting values, no automatic edit, no LLM. |
+| Natural-language requirement extraction | Partial | Deterministic prompt parser extracts spur-gear values and a limited EV intake (seats, length, width, range, electric intent); records evidence, ranges, missing/conflicting values. No automatic edit or LLM. |
 | Dimensions, loads, operating inputs and objectives | Partial | Fixed typed numeric fields for ratio, torque, speed, module and width; no units parser or acceptance criteria. |
 | Files, drawings, sketches and PDF ingestion | Unsupported | No parser or interpretation claim. |
 | Missing/conflicting inputs and assumptions | Partial | Fixed assumptions are visible; no clarifying-question workflow. |

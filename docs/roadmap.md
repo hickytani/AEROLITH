@@ -8,6 +8,10 @@
 4. Define explicit graph/dependency edges and a documented artifact lifecycle before adding more design families.
 5. Connect a server-side language-model provider only after schema validation, fallback behavior, privacy controls, and evaluation benchmarks are in place.
 
+## Current prompt-generation milestone
+
+The request intake now has a versioned proposal contract. It supports review-and-commit for the already generated spur-gear pair and returns a conceptual, non-committable electric-vehicle system outline for the sports-car example. The next implementation should add the first validated vehicle component generators (starting with a dimensioned chassis envelope and wheel/tire primitives), explicit assembly transforms, real geometry artifacts, and revision-linked manifest/BOM outputs before describing a vehicle as generated.
+
 ## Next release
 
 - Project accounts, secure sessions, ownership, audit records, privacy/retention settings, API authentication and rate limits.

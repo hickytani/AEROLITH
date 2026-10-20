@@ -239,3 +239,20 @@ test('Studio and product surfaces use local readable type without sub-12px text'
   assert.match(studioCss, /--muted:\s*#[0-9a-f]{6}/i);
   assert.match(productCss, /font-size:\s*15px/);
 });
+
+test('Studio prompt intake is wired to a reviewable specification and explicit revision commit', async () => {
+  const [markup, script, style] = await Promise.all([
+    readFile(new URL('../public/index.html', import.meta.url), 'utf8'),
+    readFile(new URL('../public/app.js', import.meta.url), 'utf8'),
+    readFile(new URL('../public/style.css', import.meta.url), 'utf8'),
+  ]);
+  for (const id of ['request-text', 'parse-request', 'intake-result', 'specification-review']) {
+    assert.match(markup, new RegExp(`id="${id}"`));
+  }
+  assert.match(script, /required\('parse-request'\)\.addEventListener\('click'/);
+  assert.match(script, /request\('\/specifications\/propose'/);
+  assert.match(script, /Commit reviewed values as a new revision/);
+  assert.match(script, /body\.expected_revision = expectedRevision \?\? project\.revision/);
+  assert.match(script, /generator_available \? '' : ' · no geometry generator'/);
+  assert.match(style, /\.specification-review\s*\{[^}]*overflow:\s*auto/);
+});
