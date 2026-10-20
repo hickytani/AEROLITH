@@ -90,6 +90,12 @@ button:disabled { opacity: .58; cursor: wait; }
 .component-select small { display: block; margin-top: 3px; color: #526575; font: 12px/1.45 var(--font-mono); }
 .eye { align-self: center; min-width: 64px; padding: 6px 7px; border: 1px solid #d3dfe4; background: #fff; color: #315668; font-size: 12px; font-weight: 600; cursor: pointer; }
 .eye[aria-pressed="false"] { background: #eef1f3; color: #536575; }
+.component-assistant { margin-top: 15px; padding: 12px; border: 1px solid #d3dfe4; background: #f7fafb; }
+.component-assistant h3 { margin: 0 0 10px; color: #173247; font-size: 14px; }
+.component-assistant label { display: block; margin-bottom: 5px; color: #405969; font-size: 12px; }
+.component-assistant input { width: 100%; min-height: 38px; padding: 8px; border: 1px solid #c7d3da; color: #173247; font: inherit; font-size: 14px; }
+.component-assistant button { min-height: 36px; margin-top: 8px; padding: 6px 9px; border: 1px solid #a9c1ca; background: #eaf3f5; color: #173247; font-size: 12px; font-weight: 600; cursor: pointer; }
+.component-assistant p { margin: 9px 0 0; color: #405969; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 .dot { width: 10px; height: 10px; flex: 0 0 10px; border-radius: 50%; }
 .cyan { background: #0085a0; }
 .silver { background: #8297a4; }

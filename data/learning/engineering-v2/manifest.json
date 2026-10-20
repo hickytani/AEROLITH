@@ -1,0 +1,19 @@
+{
+  "schema_version": "2.0",
+  "dataset_version": "engineering-v2.0.0",
+  "purpose": "Small synthetic development fixtures for local pipeline validation; not a production SLM corpus.",
+  "license": "CC0-1.0",
+  "split_policy": "Stable example IDs are assigned to one split only. The held-out test split is never used for training.",
+  "supported_categories": [
+    "requirement_extraction",
+    "constraint_interpretation",
+    "assembly_planning",
+    "engineering_tool_use",
+    "component_understanding",
+    "change_impact",
+    "failure_handling",
+    "engineering_explanation"
+  ],
+  "quality_status": "development_fixture_not_production",
+  "training_claim": "No model has been trained on this dataset."
+}

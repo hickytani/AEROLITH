@@ -10,3 +10,8 @@ __pycache__/
 artifacts/*
 !artifacts/.gitkeep
 data/project.json
+.local-models/
+data/models/
+data/learning/raw-traces/
+data/learning/quarantine/
+data/learning/curated/

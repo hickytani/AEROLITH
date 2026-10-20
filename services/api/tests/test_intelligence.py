@@ -87,8 +87,8 @@ def test_electric_vehicle_prompt_gets_a_conceptual_graph_without_fake_geometry()
     assert result.components
     assert all(item.status == "CONCEPTUAL_ONLY" and not item.generator_available for item in result.components)
     assert result.supported_artifacts == []
-    assert result.unsupported_requests
-    assert any(item.id == "electric-vehicle" and item.kind == "assembly" for item in result.components)
+    assert result.unresolved_questions
+    assert any(item.id == "vehicle-assembly" and item.kind == "assembly" for item in result.components)
     assert result.can_commit is False
 
 
@@ -99,7 +99,7 @@ def test_two_seat_electric_sports_car_prompt_extracts_dimensions_and_decomposes_
     )
     assert result.system_name == "2-seat electric sports car"
     assert result.domain == "automotive"
-    assert result.generation_status == "CONCEPTUAL_ONLY"
+    assert result.generation_status == "GEOMETRY_REVIEW"
     parameters = {item.name: item for item in result.parameters}
     assert parameters["occupant_capacity"].value == 2
     assert parameters["overall_length_mm"].value == 4200
@@ -108,13 +108,13 @@ def test_two_seat_electric_sports_car_prompt_extracts_dimensions_and_decomposes_
     assert parameters["propulsion_type"].value == "electric"
     assert parameters["overall_length_mm"].source == "user-provided"
     ids = {item.id for item in result.components}
-    assert {"chassis-frame", "front-suspension", "steering-system", "braking-system", "traction-battery", "traction-motor", "traction-inverter", "reduction-drive", "thermal-management"} <= ids
-    assert {("traction-battery", "traction-inverter"), ("traction-inverter", "traction-motor")} <= {
+    assert {"frame-rail-left", "front-axle-reference", "body-envelope", "battery-pack-envelope", "traction-motor-envelope", "inverter-envelope", "reduction-drive-envelope"} <= ids
+    assert {("battery-pack-envelope", "inverter-envelope")} <= {
         (item.source_component, item.target_component) for item in result.connections
     }
     assert result.connections
-    assert result.supported_artifacts == []
-    assert result.can_commit is False
+    assert "layout drawing PDF" in result.supported_artifacts
+    assert result.can_commit is True
     assert any("wheelbase" in question for question in result.unresolved_questions)
 
 

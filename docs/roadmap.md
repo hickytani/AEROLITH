@@ -4,13 +4,13 @@
 
 1. Extend independent calculation references and geometry validation when adding supported gear profiles; current public equation references and fixed reference cases are documented in `engineering-reference-validation.md`, but they do not validate engagement or strength.
 2. Add process-safe locking or transactional storage before allowing concurrent writers; add artifact index recovery and integrity checks.
-3. Run browser acceptance for Studio Apply, revision-bound geometry and exports, Learn interaction, New Design, and Platform copy controls. Current environment has no browser surface or installed Playwright/browser runner, so browser acceptance remains unperformed.
+3. Expand browser acceptance to cover model-configured component Q&A, trace consent/curation UX, and model-registry controls. Sprint 5 browser acceptance for the Studio is recorded in the completion report; the integrated model work has API-level tests but no model UI inference session was available.
 4. Define explicit graph/dependency edges and a documented artifact lifecycle before adding more design families.
-5. Connect a server-side language-model provider only after schema validation, fallback behavior, privacy controls, and evaluation benchmarks are in place.
+5. Collect a permissioned, human-reviewed corpus and execute paired base/candidate evaluation on sufficient Linux/WSL CUDA hardware before training or activating an adapter. The optional local Ollama adapter is schema-validated and falls back deterministically; successful inference is not yet established.
 
 ## Current prompt-generation milestone
 
-The request intake now has a versioned proposal contract. It supports review-and-commit for the already generated spur-gear pair and returns a conceptual, non-committable electric-vehicle system outline for the sports-car example. The next implementation should add the first validated vehicle component generators (starting with a dimensioned chassis envelope and wheel/tire primitives), explicit assembly transforms, real geometry artifacts, and revision-linked manifest/BOM outputs before describing a vehicle as generated.
+The prompt intake has a versioned proposal contract for gear and a bounded EV envelope family. The EV path creates separate CadQuery frame members, four tire/rim/hub/suspension-link sets, axle references, a body envelope, and battery/motor/inverter/reduction packaging solids. It produces revision-linked STL/STEP, PDF layout, manifest and preliminary BOM. The geometry is conceptual. Next work: independently validate packaging and interfaces, add committed EV-family parameter editing, and complete browser acceptance. No range, mass, strength, dynamics, crash or safety calculation is delivered.
 
 ## Next release
 

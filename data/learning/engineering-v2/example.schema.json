@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["id", "split", "task_category", "input", "expected_output", "schema_version", "provenance", "review_status", "dataset_version"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,80}$"},
+    "split": {"enum": ["train", "validation", "test"]},
+    "task_category": {"enum": ["requirement_extraction", "constraint_interpretation", "assembly_planning", "engineering_tool_use", "component_understanding", "change_impact", "failure_handling", "engineering_explanation"]},
+    "input": {"type": "string", "minLength": 1},
+    "context": {"type": "object"},
+    "expected_output": {"type": "object"},
+    "schema_version": {"const": "1.0"},
+    "provenance": {"type": "object", "required": ["origin", "license"], "properties": {"origin": {"enum": ["synthetic_hand_authored", "reviewed_execution_trace"]}, "license": {"type": "string"}}},
+    "review_status": {"enum": ["SYNTHETIC_REVIEWED", "HUMAN_APPROVED"]},
+    "dataset_version": {"const": "engineering-v2.0.0"},
+    "generator_version": {"type": ["string", "null"]},
+    "tool_version": {"type": ["string", "null"]},
+    "engineering_revision": {"type": ["integer", "null"]}
+  },
+  "additionalProperties": false
+}

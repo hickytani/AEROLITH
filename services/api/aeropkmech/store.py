@@ -56,6 +56,9 @@ def load() -> Design:
         return design
     try:
         raw = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        if raw.get("family") == "electric_vehicle":
+            from .automotive import VehicleDesign
+            return VehicleDesign.model_validate(raw)
         return Design.model_validate(raw)
     except (OSError, json.JSONDecodeError, ValidationError, TypeError) as exc:
         raise ProjectStateError(f"Persisted project is unreadable or invalid at {STATE_FILE}.") from exc
@@ -63,7 +66,11 @@ def load() -> Design:
 
 def save(design: Design) -> None:
     try:
-        validated = Design.model_validate(design.model_dump(mode="json"))
+        if design.family == "electric_vehicle":
+            from .automotive import VehicleDesign
+            validated = VehicleDesign.model_validate(design.model_dump(mode="json"))
+        else:
+            validated = Design.model_validate(design.model_dump(mode="json"))
     except ValidationError as exc:
         raise ProjectPersistenceError("Candidate project failed full schema validation; it was not saved.") from exc
     try:

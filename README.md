@@ -1,6 +1,6 @@
 # AeroPKmech
 
-An early, local engineering design environment for an educational external spur gear pair. It includes a revisioned design state, deterministic gear-ratio and pitch-geometry calculations, range validation, a browser 3D mesh preview, revision-bound artifacts, an interactive engineering lesson, and a local developer portal.
+An early, local engineering design environment for an educational external spur gear pair and a conceptual EV packaging assembly. It includes revisioned canonical state, deterministic gear calculations, a browser CAD mesh preview, a vector vehicle layout drawing, revision-bound artifacts, an interactive engineering lesson, and a local developer portal.
 
 ## Run locally
 
@@ -17,7 +17,7 @@ The app writes its one active project to `data/project.json` and generated CAD/r
 
 ## Demonstration
 
-Open the workspace, change the pinion or gear tooth count, then select **Apply changes**. The server validates the request, persists a new history revision, returns calculations and verification tied to that revision, and refreshes the viewport from generated geometry. The viewer checks each component STL revision, identity, millimetre units, format and SHA-256 before rendering; a failed component is reported independently. The interface uses a local system-font stack. Use **New design** for registry-backed initialization, **Learn** for the interactive gear lesson, and **Platform** for the live local API reference. Learn progress is browser-local. Example state: 18/54 teeth, module 2 mm, width 12 mm, ratio 3:1, center distance 72 mm, 300 rpm ideal output speed and 24 N·m ideal output torque.
+Submit a supported gear prompt or the two-seat EV prompt. Review source-tagged inputs and assumed packaging defaults before committing. The EV creates separate frame, wheel/tire, body and propulsion packaging solids in CadQuery, with a shared project revision. Generate STEP/STL, layout PDF, manifest and BOM from the artifact panel. The EV is conceptual packaging geometry: the 300 km value remains a target; mass, range calculation, strength, crashworthiness, safety, thermal design and production suitability are unsupported. Gear inputs keep their existing edit flow. Learn progress is browser-local. Optional local Ollama integration can propose uncommitted extraction results and answer selected-component questions using project context; deterministic calculations and CAD stay authoritative.
 
 ## Current API
 
@@ -25,8 +25,10 @@ Open the workspace, change the pinion or gear tooth count, then select **Apply c
 - `GET /api/v1/project`
 - `PATCH /api/v1/project` with numeric fields `pinion_teeth`, `gear_teeth`, `module_mm`, `face_width_mm`, `input_torque_Nm`, `input_speed_rpm`
 - `GET /api/v1/design-families`, `POST /api/v1/project/initialize`, and `POST /api/v1/project/demo`
-- `POST /api/v1/project/interpret` returns a deterministic typed proposal with evidence, missing inputs and conflicts; no LLM extraction is claimed
-- `POST /api/v1/specifications/propose` returns a versioned reviewable specification: complete spur-gear prompts can be reviewed and applied; electric-vehicle prompts receive a conceptual subsystem outline explicitly marked without geometry generators
+- `POST /api/v1/project/interpret` returns a deterministic typed proposal by default; opt-in local model proposals pass the same schema and remain uncommitted
+- `POST /api/v1/specifications/propose` returns a versioned reviewable spur-gear or EV packaging specification
+- `POST /api/v1/project/vehicle/generate` commits reviewed EV parameters with an optimistic revision guard
+- `GET /api/v1/vehicle/layout.pdf`, `/api/v1/vehicle/manifest.json`, `/api/v1/vehicle/bom.json` generates revision-linked vehicle artifacts
 - `POST /api/v1/learn/spur-gear/experiment` calculates uncommitted lesson inputs with the same engineering core
 - `GET /api/v1/export/stl`
 - `GET /api/v1/export/step`
@@ -34,13 +36,19 @@ Open the workspace, change the pinion or gear tooth count, then select **Apply c
 - `GET /api/v1/report.pdf`
 - `GET /api/v1/artifacts` lists retained artifacts and stale revisions
 - `GET /api/v1/artifacts/{filename}` checksum-verifies and downloads a retained artifact
+- `GET /api/v1/model/status`, `POST /api/v1/components/explain`, and `POST /api/v1/project/change-impact` provide optional local-model assistance and read-only component/change analysis
+- `/api/v1/learning/*` provides opt-in redacted trace capture, human review/curation, and split validation; capture is disabled by default
+- `/api/v1/models/registry*` provides checksummed candidate lifecycle, approval, activation, and rollback
+- `GET /api/v1/model/status`, `POST /api/v1/components/explain`, and `POST /api/v1/project/change-impact` provide optional local model assistance and read-only component/change analysis
+- `/api/v1/learning/*` provides opt-in redacted trace capture, human review/curation, and split validation; capture is disabled by default
+- `/api/v1/models/registry*` provides checksummed candidate lifecycle, approval, activation, and rollback
 
 PATCH errors use HTTP 422 with validation messages. Each accepted PATCH increments the revision and retains the prior full state in `history`.
 
 ## Limits
 
-The gear boundary is a polygonal tooth approximation built as valid CadQuery/Open CASCADE solids. STEP and STL artifacts are genuine CAD-kernel exports, but the tooth profile is not an involute and is not manufacturing-ready. The demo omits bearings, housing, clearances, backlash, tolerances, material data, stress/strength, fatigue, thermal analysis, and solver-based simulation. The calculations do not establish safety or suitability for real machinery. Persistence is a single local JSON file; the application has no authentication, multi-user isolation, database, object store, or production security controls. Requirement extraction is deterministic pattern matching, not an LLM.
+The gear boundary is a polygonal tooth approximation built as valid CadQuery/Open CASCADE solids. STEP and STL artifacts are genuine CAD-kernel exports, but the tooth profile is not an involute and is not manufacturing-ready. The demo omits bearings, housing, clearances, backlash, tolerances, material data, stress/strength, fatigue, thermal analysis, and solver-based simulation. The calculations do not establish safety or suitability for real machinery. Persistence is a single local JSON file; the application has no authentication, multi-user isolation, database, object store, or production security controls. Deterministic extraction remains the default; optional local-model inference has not passed a live smoke test on this machine.
 
 ## Development status
 
-See [docs/api.md](docs/api.md), [docs/model-strategy.md](docs/model-strategy.md), [docs/feature-status.md](docs/feature-status.md), [docs/engineering-methods.md](docs/engineering-methods.md), [docs/engineering-reference-validation.md](docs/engineering-reference-validation.md), [docs/architecture.md](docs/architecture.md), [docs/security.md](docs/security.md), [docs/roadmap.md](docs/roadmap.md), [docs/sprint-3-audit.md](docs/sprint-3-audit.md), [docs/sprint-4-geometry-readability.md](docs/sprint-4-geometry-readability.md), [docs/completion-analysis-report.md](docs/completion-analysis-report.md), and [data/learning/README.md](data/learning/README.md). Tooth strength, complete physical verification, a connected tutor, and model training remain out of scope.
+See [docs/api.md](docs/api.md), [docs/model-strategy.md](docs/model-strategy.md), [docs/feature-status.md](docs/feature-status.md), [docs/engineering-methods.md](docs/engineering-methods.md), [docs/engineering-reference-validation.md](docs/engineering-reference-validation.md), [docs/architecture.md](docs/architecture.md), [docs/security.md](docs/security.md), [docs/roadmap.md](docs/roadmap.md), [docs/sprint-3-audit.md](docs/sprint-3-audit.md), [docs/sprint-4-geometry-readability.md](docs/sprint-4-geometry-readability.md), [docs/completion-analysis-report.md](docs/completion-analysis-report.md), [data/learning/README.md](data/learning/README.md), and [ml-training/README.md](ml-training/README.md). Tooth strength and complete physical verification remain out of scope; successful model inference and training have not been established.

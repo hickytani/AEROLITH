@@ -10,7 +10,7 @@ AeroPKmech is a runnable, local web demonstrator for one constrained design fami
 
 The core demonstration flow works end to end: read the current project, propose fields from supported text, let a user edit inputs, persist a new revision, recompute values, view component meshes, and request current-revision CAD/report files. The initial baseline recorded **7 passing tests**. The engineering-integrity sprint subsequently expanded the suite to **35 passing tests**, with a successful Next.js production build.
 
-This is a bounded educational prototype, not a validated gear-design or production engineering system. The tooth shape is a polygonal approximation, not an involute; the calculations are ideal kinematics; material strength, contact, thermal behavior, safety, manufacturing tolerances, and independent engineering validation are outside the implemented scope. â€œAIâ€ currently means a transparent deterministic text extractor and an unconnected provider interface. **No model is trained or connected.**
+This is a bounded educational prototype, not a validated gear-design or production engineering system. The tooth shape is a polygonal approximation, not an involute; the calculations are ideal kinematics; material strength, contact, thermal behavior, safety, manufacturing tolerances, and independent engineering validation are outside the implemented scope. The default intake is deterministic, and a local-only model adapter now exists for optional, uncommitted proposals and component answers. **No successful model inference or training run has been established.**
 
 ## 2. Delivered capabilities
 
@@ -67,9 +67,9 @@ These checks establish code-path and geometric-kernel behavior for the tested in
 
 ## 5. Requirement text handling and AI status
 
-The current parser recognizes a narrow set of expressions for pinion and driven-gear tooth counts, ratio, torque, speed, module, and face width. It handles explicit NÂ·mm torque conversion to NÂ·m, derives ratio from explicitly stated tooth counts, records matched text evidence, flags a conflicting stated ratio, validates against a strict Pydantic proposal schema, and lists missing values. Every extraction requires confirmation and remains separate from project state until the user applies an edit.
+The default parser recognizes a narrow set of expressions for pinion and driven-gear tooth counts, ratio, torque, speed, module, and face width. It handles explicit NÂ·mm torque conversion to NÂ·m, derives ratio from explicitly stated tooth counts, records matched text evidence, flags a conflicting stated ratio, validates against a strict Pydantic proposal schema, and lists missing values. Optional loopback Ollama extraction can propose the same gear schema when explicitly enabled; every proposal remains uncommitted and requires user review.
 
-The `RequirementProvider` protocol is an integration seam; it is not a configured provider. `NoModelProvider` intentionally does not call a network. There is no model training, model evaluation dataset, remote inference, document/image/PDF parser, or claim of open-ended specification understanding. Training is not evidenced as complete and should not be described as complete.
+The optional `OllamaProvider` is restricted to loopback. It provides model status, component-context answers, and opt-in gear extraction with schema validation, bounded context and deterministic fallback. It does not mutate state or execute tools. There is no remote inference, document/image/PDF parser, or open-ended specification understanding. Training is not evidenced as complete and should not be described as complete.
 
 ## 6. API surface
 
@@ -118,7 +118,7 @@ Both pytest runs emitted one Starlette deprecation warning: using `httpx` with `
 
 ## 10. Not implemented or not established
 
-The following must not be represented as delivered: involute/manufacturing-ready gears; standards-based bending/contact stress, fatigue, deflection, thermal analysis, safety factors, or solver simulation; validated meshing or interference checks; a language model, model training, or autonomous design edits; file/drawing/PDF/image understanding; a general CAD system; authenticated multi-user project storage; production deployment controls; independent engineering benchmark validation; or certification.
+The following must not be represented as delivered: involute/manufacturing-ready gears; standards-based bending/contact stress, fatigue, deflection, thermal analysis, safety factors, or solver simulation; validated meshing or interference checks; a successfully inference-tested or trained language model; autonomous design edits; file/drawing/PDF/image understanding; a general CAD system; authenticated multi-user project storage; production deployment controls; independent engineering benchmark validation; or certification.
 
 ## 11. Recommended next work, in order
 
@@ -212,6 +212,16 @@ The fix supplies the missing element, scopes cleanup to one module instance, lim
 
 Final incident verification: `npm test` passed **53 Python and 12 Node tests** (one existing Starlette/httpx deprecation warning); `npm run build:web`, standalone TypeScript, and JavaScript syntax checks passed. The pre-existing `apps/web/next-env.d.ts` modification was preserved outside the incident changes.
 
+## 19. Sprint 5 EV geometry vertical slice
+
+The family registry now includes `electric_vehicle@1.0` alongside the existing gear family. Both persist to the same revisioned `data/project.json`. The submitted EV prompt records two seats, 4,200 mm length, 1,800 mm width, electric propulsion and a 300 km target with source evidence; configurable packaging values are explicitly marked assumed. The review/commit endpoint requires the proposal's expected revision.
+
+The EV generator creates 27 distinct CadQuery solids: frame rails/crossmembers, two axle references, four tire/rim/hub/link groups, body envelope, and battery/motor/inverter/reduction package envelopes. Geometry is loaded by the existing Studio component mesh safeguards. The default 4,200 × 1,800 mm envelope matches the prompt; the narrower body package keeps tire envelopes visible. The family provides STEP, STL, component STL, a revision-labeled vector layout PDF, manifest JSON, BOM JSON, and a conceptual engineering note. Actual assembly bounds and wheel centers are returned with calculated/assumed/unresolved/unsupported statuses. Artifact checksums, revisions, generator metadata and coarse dependency keys are indexed; revision changes mark earlier artifacts stale. Artifact index writes and reads are serialized within this process to avoid concurrent component-mesh writes racing on Windows.
+
+This is conceptual packaging geometry. The 300 km range remains an input target; mass, energy sizing, motor sizing, dynamics, strength, crashworthiness, thermal behavior, regulations, safety and manufacturing are not assessed. An in-process lock does not provide multi-process writer safety. Chrome acceptance at 1440 × 900 and 1280 × 720 exercised prompt proposal/commit, 27 component meshes, selection/visibility, camera views, and the five revision-bound artifacts. The browser reported no console/runtime errors. The local screenshots and JSON evidence are `artifacts/sprint5-ev-desktop.png`, `artifacts/sprint5-ev-1280x720.png`, and `artifacts/sprint5-browser-acceptance.json`; these ignored files are not part of the source diff. This milestone is uncommitted and unpushed.
+
+Final Sprint 5 automated checks: `npm test` passed **69 Python tests** and **13 Node tests**, with the existing Starlette/httpx deprecation warning. `npm run build:web`, standalone TypeScript, JavaScript syntax checks and `git diff --check` passed. The suite includes a 27-worker concurrent artifact publication regression case and confirms the default EV CAD bounds match 4,200 × 1,800 mm while the tires clear the body envelope.
+
 ## 18. Prompt-to-system generation milestone
 
 The Studio intake now calls a versioned, read-only proposal API and renders provenance, values, hierarchy, connections, unresolved inputs, conflicts, range issues, assumptions, limitations, and artifact availability. Complete spur-gear proposals can be explicitly reviewed and committed with an optimistic revision check. The former unhandled prompt button is connected to this flow.
@@ -219,3 +229,15 @@ The Studio intake now calls a versioned, read-only proposal API and renders prov
 For the supplied two-seat electric sports-car request, deterministic extraction records two occupants, 4,200 mm length, 1,800 mm width, 300 km target range, and electric propulsion. It returns a conceptual subsystem tree and typed interfaces. Automotive nodes are explicitly `CONCEPTUAL_ONLY` and have no geometry generator; no vehicle CAD, calculations, battery sizing, mass, BOM, or artifacts are claimed. A real vehicle design family remains future work and needs defined assumptions plus independently checked engineering models.
 
 Milestone verification: `npm test` passed **62 Python and 13 Node tests** with one existing Starlette/httpx deprecation warning; `npm run build:web`, standalone TypeScript, syntax checks for the three Studio scripts, and `git diff --check` passed. The new prompt display was not visually reviewed in a browser. Detailed scope and verification are in [prompt-to-system-generation.md](prompt-to-system-generation.md). No commit or push was made for this milestone.
+
+## 20. Integrated engineering platform and SLM pipeline update
+
+The integrated platform adds a conceptual EV engineering-family vertical slice alongside the gear demonstrator, a revision-bound component assistant, read-only change-impact previews, and a local model registry with checksummed metadata and explicit activation/rollback states. The assistant receives selected-component context and cannot modify project state; design changes still use reviewed, revision-conditional API actions. Training trace capture remains opt-in, requires explicit review before curation, and writes to ignored local directories. The training environment is isolated under `ml-training/`; training dependencies are not added to the product runtime.
+
+The new versioned engineering dataset contains eight synthetic development fixtures across eight task categories, split into four training, two validation and two held-out examples. It is useful for exercising schema, provenance and split checks, but is far too small to support meaningful fine-tuning or a quality claim. The QLoRA runner, preflight, paired evaluator, promotion thresholds and registry lifecycle are implemented. Training, candidate-vs-base evaluation and adapter promotion have not completed.
+
+Hardware preflight detected an RTX 3050 Laptop GPU with 6 GiB VRAM, 15.69 GiB system RAM, and 500.93 GiB free disk. The conservative training gate requires 8 GiB VRAM, 16 GiB RAM and 30 GiB free disk, so it refused to load weights. An inference attempt with the already-installed Ollama Qwen3 0.6B model failed during CUDA allocation; CPU fallback also returned an inference error. No Qwen3-4B or Qwen3-8B weights were downloaded, no successful model response or quality score was recorded, and no SLM was trained. The Qwen3-4B model card identifies an Apache-2.0 license and 4B parameters; Qwen3-8B is documented only as a comparison candidate ([Qwen3-4B](https://huggingface.co/Qwen/Qwen3-4B), [Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B)).
+
+Chrome acceptance at 1440×900 and 1280×720 exercised the EV prompt proposal and revision commit, 27 generated component meshes, selection and visibility, selected-part Q&A through deterministic fallback, unchanged-design impact preview, and five revision-bound artifacts. The recorded run had no browser console errors or failed HTTP responses. This verifies the implemented local workflow and fallback; it does not demonstrate a successful SLM response, physical vehicle engineering, or manufacturing readiness.
+
+Final integrated verification: `npm test` passed **87 Python tests** and **14 Node tests**, with one existing Starlette/httpx deprecation warning. The Next.js production build, standalone TypeScript check, JavaScript syntax checks and `git diff --check` passed. Browser screenshots and JSON evidence remain local under ignored `artifacts/` paths and are not part of the source changes. The work is still uncommitted and unpushed.

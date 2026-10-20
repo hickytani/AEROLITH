@@ -151,7 +151,7 @@ def test_specification_proposal_is_schema_valid_and_revision_guard_is_optimistic
     assert client.get("/api/v1/project").json()["revision"] == original["revision"] + 1
 
 
-def test_ev_specification_endpoint_returns_conceptual_architecture_without_committing(tmp_path, monkeypatch):
+def test_ev_specification_endpoint_returns_geometry_ready_proposal_without_committing(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(store, "STATE_FILE", tmp_path / "data" / "project.json")
     client = TestClient(app)
@@ -161,11 +161,11 @@ def test_ev_specification_endpoint_returns_conceptual_architecture_without_commi
     })
     assert result.status_code == 200
     specification = result.json()
-    assert specification["intent"] == "CONCEPTUAL_ELECTRIC_VEHICLE"
-    assert specification["can_commit"] is False
-    assert all(node["generator_available"] is False for node in specification["components"])
-    assert any(node["id"] == "electric-vehicle" and node["kind"] == "assembly" for node in specification["components"])
-    assert specification["supported_artifacts"] == []
+    assert specification["intent"] == "SUPPORTED_ELECTRIC_VEHICLE"
+    assert specification["can_commit"] is True
+    assert all(node["generator_available"] is True for node in specification["components"])
+    assert any(node["id"] == "vehicle-assembly" and node["kind"] == "assembly" for node in specification["components"])
+    assert "layout drawing PDF" in specification["supported_artifacts"]
     assert client.get("/api/v1/project").json() == original
 
 

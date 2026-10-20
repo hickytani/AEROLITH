@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+from threading import RLock
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -12,6 +13,7 @@ from .domain import Design
 
 REPORT_VERSION = "engineering-note-0.2"
 INDEX_NAME = "artifact-index.json"
+_ARTIFACT_INDEX_LOCK = RLock()
 
 
 def _read_index(index: Path) -> dict:
@@ -22,7 +24,8 @@ def _read_index(index: Path) -> dict:
     required = {"artifact_id", "kind", "filename", "revision", "design_sha256", "sha256", "generator_version", "created_at"}
     safe_item = lambda item: (
         isinstance(item.get("artifact_id"), str)
-        and item.get("kind") in {"assembly", "pinion", "gear", "report"}
+        and isinstance(item.get("kind"), str)
+        and re.fullmatch(r"[A-Za-z0-9_-]+", item["kind"]) is not None
         and isinstance(item.get("filename"), str)
         and Path(item["filename"]).name == item["filename"]
         and re.fullmatch(r"[A-Za-z0-9_.-]+", item["filename"]) is not None
@@ -61,7 +64,6 @@ def publish(data: bytes, directory: Path, design: Design, kind: str, extension: 
     digest = hashlib.sha256(data).hexdigest()
     filename = f"{kind}-r{design.revision}-{generator_version}-{digest[:12]}.{extension}"
     path = directory / filename
-    _atomic_write(path, data)
     metadata = {
         "artifact_id": f"{kind}:r{design.revision}:{digest[:16]}",
         "kind": kind,
@@ -71,28 +73,50 @@ def publish(data: bytes, directory: Path, design: Design, kind: str, extension: 
         "sha256": digest,
         "generator_version": generator_version,
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "dependencies": _dependencies(design, kind),
     }
     index = directory / INDEX_NAME
-    existing = _read_index(index)
-    artifacts = [item for item in existing["artifacts"] if item.get("artifact_id") != metadata["artifact_id"]]
-    artifacts.append(metadata)
-    _atomic_write(index, json.dumps({"schema_version": 1, "artifacts": artifacts}, indent=2).encode("utf-8"))
+    # Component meshes may be generated concurrently by the Studio loader.
+    # Serialize the file+index publication so Windows replace operations do
+    # not race and a reader never observes a partially updated index.
+    with _ARTIFACT_INDEX_LOCK:
+        _atomic_write(path, data)
+        existing = _read_index(index)
+        artifacts = [item for item in existing["artifacts"] if item.get("artifact_id") != metadata["artifact_id"]]
+        artifacts.append(metadata)
+        _atomic_write(index, json.dumps({"schema_version": 1, "artifacts": artifacts}, indent=2).encode("utf-8"))
     return path, metadata
+
+
+def _dependencies(design: Design, kind: str) -> list[dict[str, str | int]]:
+    """Record coarse regeneration inputs; revision/hash remains the stale authority."""
+    family = getattr(design, "family", "unknown")
+    if family == "electric_vehicle":
+        if kind in {"assembly", "layout-drawing", "manifest", "bom", "report"}:
+            keys = ["vehicle_specification", "component_geometry", "coordinate_frames"]
+        else:
+            keys = [f"vehicle_specification:{kind}", f"component_geometry:{kind}", "coordinate_frames"]
+    elif kind in {"assembly", "report"}:
+        keys = ["spur_gear_pair:requirements", "assembly_geometry", "engineering_calculations"]
+    else:
+        keys = [f"spur_gear_pair:component:{kind}", "gear_pair_geometry"]
+    return [{"key": key, "revision": design.revision} for key in keys]
 
 
 def list_artifacts(directory: Path, current: Design) -> list[dict]:
     index = directory / INDEX_NAME
-    if not index.exists():
-        return []
-    data = _read_index(index)
-    current_digest = hashlib.sha256(current.model_dump_json().encode("utf-8")).hexdigest()
-    result = []
-    for item in data["artifacts"]:
-        filename = item.get("filename", "")
-        safe_file = isinstance(filename, str) and Path(filename).name == filename
-        result.append({
-            **item,
-            "stale": item.get("revision") != current.revision or item.get("design_sha256") != current_digest,
-            "available": safe_file and (directory / filename).is_file(),
-        })
-    return result
+    with _ARTIFACT_INDEX_LOCK:
+        if not index.exists():
+            return []
+        data = _read_index(index)
+        current_digest = hashlib.sha256(current.model_dump_json().encode("utf-8")).hexdigest()
+        result = []
+        for item in data["artifacts"]:
+            filename = item.get("filename", "")
+            safe_file = isinstance(filename, str) and Path(filename).name == filename
+            result.append({
+                **item,
+                "stale": item.get("revision") != current.revision or item.get("design_sha256") != current_digest,
+                "available": safe_file and (directory / filename).is_file(),
+            })
+        return result

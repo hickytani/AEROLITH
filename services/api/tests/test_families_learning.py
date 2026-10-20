@@ -14,11 +14,13 @@ def isolate_project(tmp_path, monkeypatch):
 
 def test_spur_gear_family_is_registered_and_version_checked():
     families = list_families()
-    assert [family.id for family in families] == ["spur_gear_pair"]
+    assert [family.id for family in families] == ["spur_gear_pair", "electric_vehicle"]
     assert families[0].schema_version == "1.0"
     assert "educational polygonal CAD" in families[0].capabilities
     assert {item["type"] for item in families[0].exporters} == {"step", "stl", "html", "pdf"}
     assert any("tooth strength/contact: UNKNOWN" in item for item in families[0].verification_checks)
+    assert families[1].schema_version == "1.0"
+    assert "layout drawing PDF" in families[1].capabilities
     with pytest.raises(UnsupportedDesignFamily, match="not implemented"):
         get_family("aerospace_wing")
     with pytest.raises(UnsupportedDesignFamily, match="schema version"):
@@ -29,7 +31,7 @@ def test_family_discovery_is_read_only_and_initialization_is_explicit(tmp_path, 
     client = isolate_project(tmp_path, monkeypatch)
     original = client.get("/api/v1/project").json()
     discover = client.get("/api/v1/design-families").json()
-    assert [item["id"] for item in discover["families"]] == ["spur_gear_pair"]
+    assert [item["id"] for item in discover["families"]] == ["spur_gear_pair", "electric_vehicle"]
     assert "Aerospace and aerodynamics" in discover["planned_areas"]
     assert client.get("/api/v1/project").json() == original
 
@@ -49,6 +51,11 @@ def test_family_discovery_is_read_only_and_initialization_is_explicit(tmp_path, 
     assert restored["revision"] == design["revision"] + 1
     assert restored["id"] == "demo-gearbox"
     assert restored["components"][0]["teeth"] == 18
+    vehicle=client.post("/api/v1/project/initialize",json={"family_id":"electric_vehicle","schema_version":"1.0"})
+    assert vehicle.status_code==200
+    assert vehicle.json()["family"]=="electric_vehicle"
+    assert vehicle.json()["revision"]==restored["revision"]+1
+    assert vehicle.json()["derived"]["calculation_status"]["range"]=="UNRESOLVED"
 
 
 def test_12_30_reference_edit_and_failure_preserve_revision(tmp_path, monkeypatch):

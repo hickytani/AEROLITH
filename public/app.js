@@ -24,6 +24,7 @@ let specificationRevision = null;
 let specificationCommitted = false;
 let specificationRequestSequence = 0;
 const visibilityById = { pinion: true, gear: true };
+let gearComponentMarkup = null;
 
 function required(id) {
   const element = byId(id);
@@ -151,17 +152,24 @@ function fitView(view = 'iso') {
   for (const mesh of visibleMeshes) bounds.expandByObject(mesh);
   if (bounds.isEmpty()) {
     const derived = project.derived;
-    const largestDiameter = Math.max(...derived.components.map((component) => component.outer_diameter_mm));
-    const center = derived.center_distance_mm;
-    bounds.min.set(-largestDiameter / 2, -largestDiameter / 2, -project.requirements.face_width_mm / 2);
-    bounds.max.set(center + largestDiameter / 2, largestDiameter / 2, project.requirements.face_width_mm / 2);
+    if (derived.geometry_bounds_mm) {
+      const size = derived.geometry_bounds_mm;
+      bounds.min.set(-size.length / 2, -size.width / 2, 0);
+      bounds.max.set(size.length / 2, size.width / 2, size.height);
+    } else {
+      const largestDiameter = Math.max(...derived.components.map((component) => component.outer_diameter_mm));
+      const center = derived.center_distance_mm;
+      bounds.min.set(-largestDiameter / 2, -largestDiameter / 2, -project.requirements.face_width_mm / 2);
+      bounds.max.set(center + largestDiameter / 2, largestDiameter / 2, project.requirements.face_width_mm / 2);
+    }
   }
   const visibleBounds = unionBounds(visibleMeshes.map((mesh) => {
     const box = new THREE.Box3().setFromObject(mesh);
     return { min: box.min.toArray(), max: box.max.toArray() };
   }));
   const selectedBounds = visibleBounds || { min: bounds.min.toArray(), max: bounds.max.toArray() };
-  const pose = cameraFitPose(selectedBounds.min, selectedBounds.max, camera.aspect, camera.fov, view);
+  const cameraView = project.family === 'electric_vehicle' && view === 'front' ? 'vehicle-front' : view;
+  const pose = cameraFitPose(selectedBounds.min, selectedBounds.max, camera.aspect, camera.fov, cameraView);
   camera.up.fromArray(pose.up);
   camera.position.fromArray(pose.position);
   camera.near = pose.near;
@@ -292,10 +300,34 @@ const specificationInputs = {
   overall_length_mm: { label: 'Overall length', min: 1500, max: 12000, step: 10 },
   overall_width_mm: { label: 'Overall width', min: 800, max: 4000, step: 10 },
   target_range_km: { label: 'Target range', min: 1, max: 5000, step: 1 },
+  body_height_mm: { label: 'Body height', min: 900, max: 3000, step: 10 },
+  wheelbase_mm: { label: 'Wheelbase', min: 1000, max: 8000, step: 10 },
+  front_track_mm: { label: 'Front track', min: 800, max: 3000, step: 10 },
+  rear_track_mm: { label: 'Rear track', min: 800, max: 3000, step: 10 },
+  tire_outer_diameter_mm: { label: 'Tire outside diameter', min: 300, max: 1500, step: 5 },
+  tire_width_mm: { label: 'Tire section width', min: 100, max: 600, step: 5 },
+  ground_clearance_mm: { label: 'Ground clearance', min: 50, max: 500, step: 5 },
+  frame_rail_width_mm: { label: 'Frame rail width', min: 20, max: 300, step: 5 },
+  frame_rail_height_mm: { label: 'Frame rail height', min: 20, max: 400, step: 5 },
+  body_width_mm: { label: 'Body envelope width', min: 800, max: 4000, step: 10 },
+  body_length_mm: { label: 'Body envelope length', min: 1000, max: 12000, step: 10 },
 };
 const gearSpecificationFields = ['pinion_teeth', 'gear_teeth', 'module_mm', 'face_width_mm', 'input_torque_Nm', 'input_speed_rpm'];
+const vehicleSpecificationFields = ['overall_length_mm','overall_width_mm','occupant_capacity','target_range_km','body_height_mm','wheelbase_mm','front_track_mm','rear_track_mm','tire_outer_diameter_mm','tire_width_mm','ground_clearance_mm','frame_rail_width_mm','frame_rail_height_mm','body_width_mm','body_length_mm'];
 
 function specificationValues() {
+  if (activeSpecification?.intent === 'SUPPORTED_ELECTRIC_VEHICLE') {
+    const values = {};
+    for (const name of vehicleSpecificationFields) {
+      const input = required(`spec-${name}`);
+      const definition = specificationInputs[name];
+      const value = Number(input.value);
+      if (!input.value.trim() || !Number.isFinite(value) || value < definition.min || value > definition.max || (definition.step === 1 && !Number.isInteger(value))) return null;
+      values[name] = value;
+    }
+    values.propulsion_layout = 'rear_motor_rear_drive';
+    return values;
+  }
   if (activeSpecification?.intent !== 'SUPPORTED_SPUR_GEAR_PAIR') return null;
   const values = {};
   for (const name of gearSpecificationFields) {
@@ -367,7 +399,7 @@ function updateSpecificationCommitState() {
   const button = byId('specification-commit');
   const readiness = byId('specification-readiness');
   if (!button || !readiness) return;
-  const ready = activeSpecification.intent === 'SUPPORTED_SPUR_GEAR_PAIR'
+  const ready = ['SUPPORTED_SPUR_GEAR_PAIR','SUPPORTED_ELECTRIC_VEHICLE'].includes(activeSpecification.intent)
     && activeSpecification.conflicts.length === 0
     && activeSpecification.unsupported_requests.length === 0
     && specificationValues() !== null
@@ -376,7 +408,7 @@ function updateSpecificationCommitState() {
   button.disabled = !ready;
   readiness.textContent = ready
     ? `Complete proposal · based on project revision ${specificationRevision}. Review the values, then commit explicitly.`
-    : activeSpecification.intent !== 'SUPPORTED_SPUR_GEAR_PAIR'
+    : !['SUPPORTED_SPUR_GEAR_PAIR','SUPPORTED_ELECTRIC_VEHICLE'].includes(activeSpecification.intent)
       ? 'No supported design can be generated from this request.'
       : activeSpecification.conflicts.length
         ? 'Resolve the interpretation conflict in the request and interpret it again.'
@@ -392,7 +424,7 @@ function renderSpecification(specification) {
   panel.hidden = false;
   panel.append(textElement('h3', 'Reviewable system specification'));
   panel.append(textElement('p', `Schema ${specification.schema_version} · ${specification.provider} · uncommitted proposal`, 'specification-meta'));
-  panel.append(textElement('p', specification.intent === 'SUPPORTED_SPUR_GEAR_PAIR'
+  panel.append(textElement('p', ['SUPPORTED_SPUR_GEAR_PAIR','SUPPORTED_ELECTRIC_VEHICLE'].includes(specification.intent)
     ? `Supported family: ${specification.family_id} · schema ${specification.family_schema_version}`
     : `${specification.system_name} · ${specification.generation_status}`, 'specification-family'));
 
@@ -499,6 +531,33 @@ async function interpretSpecification() {
 async function commitSpecification() {
   if (!activeSpecification || !project || !specificationValues()) return;
   const values = specificationValues();
+  if (activeSpecification.intent === 'SUPPORTED_ELECTRIC_VEHICLE') {
+    const provenance = {};
+    const evidence = {};
+    for (const parameter of activeSpecification.parameters) {
+      if (parameter.value === null || parameter.name === 'propulsion_layout') continue;
+      provenance[parameter.name] = parameter.source === 'user-provided' ? 'USER_PROVIDED' : 'ASSUMED';
+      if (parameter.evidence) evidence[parameter.name] = parameter.evidence;
+    }
+    try {
+      const committed = await request('/project/vehicle/generate', {
+        method: 'POST', headers: {'content-type':'application/json'},
+        body: JSON.stringify({...values, expected_revision:specificationRevision, provenance, evidence}),
+      });
+      if (disposed) return;
+      project = committed;
+      fill();
+      build();
+      loadArtifacts(project.revision);
+      specificationCommitted = true;
+      required('intake-result').textContent = `Reviewed EV geometry committed as revision ${project.revision}; conceptual component solids are loading. Range and safety remain unresolved.`;
+      byId('specification-commit').textContent = `Generated at revision ${project.revision}`;
+      updateSpecificationCommitState();
+    } catch (error) {
+      required('error').textContent = error.message;
+    }
+    return;
+  }
   for (const [field, inputId] of Object.entries({
     pinion_teeth: 'pinion', gear_teeth: 'gear', module_mm: 'module', face_width_mm: 'width',
     input_torque_Nm: 'torque', input_speed_rpm: 'speed',
@@ -514,10 +573,46 @@ async function commitSpecification() {
 
 function fill() {
   if (!project) return;
+  if (gearComponentMarkup === null) gearComponentMarkup = required('components').innerHTML;
   const requirements = project.requirements;
   const derived = project.derived;
   required('rev').textContent = `REVISION ${String(project.revision).padStart(2, '0')}`;
   required('result-rev').textContent = `REVISION ${String(project.revision).padStart(2, '0')}`;
+  if (project.family === 'electric_vehicle') {
+    const p = requirements;
+    const components = required('components');
+    components.replaceChildren(textElement('div','02','railhead'),textElement('b','Generated vehicle components'));
+    for (const component of derived.components) {
+      const row=document.createElement('div');row.className='component';row.dataset.id=component.id;
+      const select=textElement('button',component.name,'component-select');select.type='button';select.dataset.id=component.id;select.setAttribute('aria-pressed',String(selectedId===component.id));
+      const meta=textElement('small',`${component.family} · ${component.dimensions.length_mm.toFixed(0)} × ${component.dimensions.width_mm.toFixed(0)} × ${component.dimensions.height_mm.toFixed(0)} mm · ${component.status}`);
+      select.append(meta);
+      const eye=textElement('button',visibilityById[component.id]===false?'Hidden':'Visible','eye');eye.type='button';eye.dataset.visibility=component.id;eye.setAttribute('aria-pressed',String(visibilityById[component.id]!==false));eye.setAttribute('aria-label',`${visibilityById[component.id]===false?'Show':'Hide'} ${component.name}`);
+      row.append(select,eye);components.append(row);
+    }
+    for (const id of ['pinion','gear','module','width','torque','speed','apply']) { const el=byId(id); if (el) {el.hidden=true;if(el.tagName==='INPUT') el.parentElement.hidden=true;} }
+    required('intro-title').textContent='Concept EV';
+    required('family-label').textContent='ELECTRIC VEHICLE · SCHEMA 1.0';
+    required('stage-title').textContent='CONCEPT EV ASSEMBLY';
+    required('gear-label').textContent=`${p.occupant_capacity} occupants · ${p.overall_length_mm.value} × ${p.overall_width_mm.value} mm`;
+    required('geometry-note').textContent='Conceptual packaging envelopes in millimetres. No structural, crash, safety, range, or manufacturing validation.';
+    required('ratio').textContent=`${p.target_range_km.value} km target`;
+    required('center').textContent=`Wheelbase ${p.wheelbase_mm.value.toFixed(0)} mm`;
+    required('out-speed').textContent=`Tracks ${p.front_track_mm.value.toFixed(0)} / ${p.rear_track_mm.value.toFixed(0)} mm`;
+    required('out-torque').textContent='Range UNRESOLVED';required('bore').textContent='Safety UNSUPPORTED';
+    required('assumptions').textContent=project.assumptions.join(' ');
+    required('rev').textContent=`REVISION ${String(project.revision).padStart(2,'0')}`;required('result-rev').textContent=`REVISION ${String(project.revision).padStart(2,'0')}`;
+    for (const link of document.querySelectorAll('.exports > a[data-artifact]')) {
+      link.hidden = false;
+      link.href = link.dataset.artifact==='drawing'?`${api}/vehicle/layout.pdf`:link.dataset.artifact==='manifest'?`${api}/vehicle/manifest.json`:link.dataset.artifact==='bom'?`${api}/vehicle/bom.json`:link.dataset.artifact==='report.pdf'?`${api}/report.pdf`:`${api}/export/${link.dataset.artifact}`;
+    }
+    required('assumptions').textContent=project.assumptions.join(' ');
+    return;
+  }
+  for (const id of ['pinion','gear','module','width','torque','speed','apply']) { const el=byId(id); if (el) {el.hidden=false;if(el.tagName==='INPUT') el.parentElement.hidden=false;} }
+  for (const link of document.querySelectorAll('.exports > a[data-artifact]')) link.hidden=['drawing','manifest','bom'].includes(link.dataset.artifact);
+  required('intro-title').textContent='Spur gear study';required('family-label').textContent='SPUR GEAR PAIR · SCHEMA 1.0';required('stage-title').textContent='ASSEMBLY VIEW';
+  required('geometry-note').textContent='EDUCATIONAL TOOTH APPROXIMATION · mm';
   required('pinion').value = project.components[0].teeth;
   required('gear').value = project.components[1].teeth;
   required('module').value = requirements.module_mm;
@@ -536,6 +631,7 @@ function fill() {
   required('gear-label').textContent = `OUTPUT · ${derived.gear_ratio.toFixed(2)}:1`;
   required('assumptions').textContent = project.assumptions.join(' ');
   required('error').textContent = '';
+  required('components').innerHTML = gearComponentMarkup;
 
   const details = required('calculation-details');
   details.replaceChildren();
@@ -691,21 +787,32 @@ function pick(event) {
   if (hit) setSelected(hit.object.userData.id);
 }
 
-for (const button of document.querySelectorAll('.component-select')) {
-  button.addEventListener('click', () => { if (!disposed) setSelected(button.dataset.id); });
-}
-for (const button of document.querySelectorAll('.eye')) {
-  button.addEventListener('click', () => {
+required('components').addEventListener('click', (event) => {
+  const button = event.target.closest('button');
+  if (!button || disposed) return;
+  if (button.classList.contains('component-select')) { setSelected(button.dataset.id); return; }
+  if (button.classList.contains('eye')) {
     if (disposed) return;
     const id = button.dataset.visibility;
-    visibilityById[id] = !visibilityById[id];
+    visibilityById[id] = !(visibilityById[id] ?? true);
     if (meshes[id]) meshes[id].visible = visibilityById[id];
     button.setAttribute('aria-pressed', String(visibilityById[id]));
     button.setAttribute('aria-label', `${visibilityById[id] ? 'Hide' : 'Show'} ${id === 'gear' ? 'driven gear' : 'pinion'}`);
     button.textContent = visibilityById[id] ? 'Visible' : 'Hidden';
     fitView();
-  });
-}
+  }
+});
+required('component-ask').addEventListener('click', async () => {
+  const output = required('component-answer');
+  const question = required('component-question').value.trim();
+  if (!project || !selectedId) { output.textContent = 'Select a component first.'; return; }
+  if (question.length < 3) { output.textContent = 'Enter a question of at least 3 characters.'; return; }
+  output.textContent = 'Checking current component context…';
+  try {
+    const result = await request('/components/explain', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ component_id: selectedId, question }) });
+    output.textContent = `${result.answer} Evidence: ${result.evidence.join('; ')} Limitations: ${result.limitations.join('; ')}${result.model_status ? ` Model status: ${result.model_status}.` : ''}`;
+  } catch (error) { output.textContent = `Could not answer from the current project: ${error.message}`; }
+});
 required('apply').addEventListener('click', () => { if (!disposed) applyChanges(); });
 required('restore-demo').addEventListener('click', () => { if (!disposed) restoreDemo(); });
 required('reset').addEventListener('click', () => fitView());

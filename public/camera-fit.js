@@ -18,6 +18,7 @@ export function cameraFitPose(min, max, aspect, fovDegrees, view = 'iso') {
     iso: [0.9, -1.05, 1.2],
     top: [0, 0, 1],
     front: [0, -1, 0.12],
+    'vehicle-front': [1, 0, 0],
   };
   const direction = directionByView[view] || directionByView.iso;
   const length = Math.hypot(...direction);

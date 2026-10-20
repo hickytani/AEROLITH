@@ -134,21 +134,30 @@ export async function loadComponentMesh({ componentId, revision, fetchImpl = fet
 }
 
 export async function loadComponentSet(components, revision, { api = '/api/v1', fetchImpl = fetch, onGeometry, onError } = {}) {
-  return Promise.all(components.map(async (component) => {
+  const outcomes = new Array(components.length);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < components.length) {
+      const index = cursor++;
+      const component = components[index];
     let geometry;
     try {
       geometry = await loadComponentMesh({ componentId: component.id, revision, fetchImpl, api });
     } catch (error) {
       onError?.(component, error);
-      return false;
+        outcomes[index] = false;
+        continue;
     }
     try {
       onGeometry?.(component, geometry);
-      return true;
+        outcomes[index] = true;
     } catch (error) {
       geometry.dispose();
       onError?.(component, error);
-      return false;
+        outcomes[index] = false;
+      }
     }
-  }));
+  }
+  await Promise.all(Array.from({length:Math.min(3,components.length)},worker));
+  return outcomes;
 }

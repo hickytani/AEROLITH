@@ -17,7 +17,7 @@
     <div class="rev" id="rev">LOADING REVISION</div>
   </header>
   <main>
-    <section class="intro"><div><p class="eyebrow">DESIGN WORKSPACE / MECHANICAL SYSTEMS</p><h1>Spur gear <em>study</em></h1><p class="sub">A parametric, revision-aware exploration of an external gear pair.</p></div><div class="family">DESIGN FAMILY<strong>SPUR GEAR PAIR · SCHEMA 1.0</strong></div></section>
+    <section class="intro"><div><p class="eyebrow">DESIGN WORKSPACE / MECHANICAL SYSTEMS</p><h1 id="intro-title">Spur gear <em>study</em></h1><p class="sub">A parametric, revision-aware engineering study.</p></div><div class="family">DESIGN FAMILY<strong id="family-label">SPUR GEAR PAIR · SCHEMA 1.0</strong></div></section>
     <section class="workspace">
       <aside class="rail">
         <div class="railhead"><span>01</span><b>Design inputs</b><small>EDITABLE · mm / N / s</small></div>
@@ -34,12 +34,13 @@
           <div class="component" data-id="pinion"><button type="button" class="component-select" data-id="pinion" aria-pressed="false"><span class="dot cyan"></span><span><span id="pinion-name">Pinion</span><small id="pinion-meta">DRIVER · INPUT</small></span></button><button type="button" class="eye" data-visibility="pinion" aria-label="Hide pinion" aria-pressed="true">Visible</button></div>
           <div class="component" data-id="gear"><button type="button" class="component-select" data-id="gear" aria-pressed="false"><span class="dot silver"></span><span><span id="gear-name">Driven gear</span><small id="gear-meta">OUTPUT</small></span></button><button type="button" class="eye" data-visibility="gear" aria-label="Hide driven gear" aria-pressed="true">Visible</button></div>
         </div>
+        <section class="component-assistant" aria-labelledby="component-assistant-title"><h3 id="component-assistant-title">Ask about selected component</h3><label for="component-question">Question</label><input id="component-question" maxlength="2000" placeholder="What does this part do?" /><button id="component-ask" type="button">Ask using project context</button><p id="component-answer" role="status" aria-live="polite">Select a component to inspect its stored parameters and assumptions.</p></section>
         <button id="restore-demo" class="text-button">Return to demo design</button>
       </aside>
       <section class="stage">
-        <div class="stagebar"><div><b>ASSEMBLY VIEW</b><span id="geometry-rev">GEOMETRY NOT LOADED</span><span id="gear-label">OUTPUT · 3:1</span></div><div class="cam"><button data-view="iso">ISO</button><button data-view="top">TOP</button><button data-view="front">FRONT</button><button id="reset">FIT</button></div></div>
+        <div class="stagebar"><div><b id="stage-title">ASSEMBLY VIEW</b><span id="geometry-rev">GEOMETRY NOT LOADED</span><span id="gear-label">OUTPUT · 3:1</span></div><div class="cam"><button data-view="iso">ISO</button><button data-view="top">TOP</button><button data-view="front">FRONT</button><button id="reset">FIT</button></div></div>
         <div id="viewport"><div class="loading" id="loading" role="status">Preparing parametric view…</div><div class="geometry-errors" id="geometry-errors" role="alert" hidden></div><div class="axis">X <b>Y</b> Z</div></div>
-        <div class="stagefoot"><span><i class="signal signal-loading" id="geometry-signal"></i><span id="geometry-state">GEOMETRY NOT LOADED</span></span><span>EDUCATIONAL TOOTH APPROXIMATION · mm</span></div>
+        <div class="stagefoot"><span><i class="signal signal-loading" id="geometry-signal"></i><span id="geometry-state">GEOMETRY NOT LOADED</span></span><span id="geometry-note">EDUCATIONAL TOOTH APPROXIMATION · mm</span></div>
       </section>
       <aside class="results">
         <div class="railhead"><span>03</span><b>Calculated results</b><small id="result-rev">CURRENT REVISION</small></div>
@@ -49,7 +50,7 @@
         <div class="rule"></div><div class="checks" id="checks"></div>
         <div class="note">Calculated checks describe this model only. They do not establish physical safety or manufacturing suitability.</div>
         <div class="exports"><div class="railhead"><span>04</span><b>Revision artifacts</b><small id="artifact-revision">LOADING</small></div>
-          <a href="/api/v1/export/step">Generate and download STEP <span>↓</span></a><a href="/api/v1/export/stl">Generate and download STL <span>↓</span></a><a href="/api/v1/report.pdf">Generate PDF report <span>↓</span></a><div id="artifact-list" class="artifact-list"></div>
+          <a data-artifact="step" href="/api/v1/export/step">Generate and download STEP <span>↓</span></a><a data-artifact="stl" href="/api/v1/export/stl">Generate and download STL <span>↓</span></a><a data-artifact="report.pdf" href="/api/v1/report.pdf">Generate PDF report <span>↓</span></a><a data-artifact="drawing" href="/api/v1/vehicle/layout.pdf" hidden>Generate vehicle layout drawing PDF <span>↓</span></a><a data-artifact="manifest" href="/api/v1/vehicle/manifest.json" hidden>Generate assembly manifest JSON <span>↓</span></a><a data-artifact="bom" href="/api/v1/vehicle/bom.json" hidden>Generate preliminary BOM JSON <span>↓</span></a><div id="artifact-list" class="artifact-list"></div>
         </div>
       </aside>
     </section>

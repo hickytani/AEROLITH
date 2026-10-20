@@ -93,6 +93,65 @@ class SpurGearPairFamily:
         return build_assembly(design)
 
 
+class ElectricVehicleFamily:
+    """Concept EV envelopes with explicit assumptions, not a roadworthy design."""
+    metadata = FamilyMetadata(
+        id="electric_vehicle", display_name="Concept electric vehicle packaging assembly",
+        category="Automotive systems / EV packaging", schema_version="1.0",
+        parameters=(
+            {"name":"overall_length_mm","unit":"mm","source":"prompt or explicit input"},
+            {"name":"overall_width_mm","unit":"mm","source":"prompt or explicit input"},
+            {"name":"wheelbase_mm","unit":"mm","source":"explicit input or recorded conceptual default"},
+            {"name":"front_track_mm","unit":"mm","source":"explicit input or recorded conceptual default"},
+            {"name":"rear_track_mm","unit":"mm","source":"explicit input or recorded conceptual default"},
+        ),
+        capabilities=("versioned EV packaging parameters","CadQuery frame/wheel/body/propulsion envelopes","assembly STEP and STL","revision-linked component STL","layout drawing PDF","manifest and BOM JSON"),
+        limitations=("conceptual envelope geometry only","no range, mass, strength, crash, suspension, thermal, regulatory, or safety analysis","assumed geometry defaults must be reviewed"),
+        artifacts=("step","stl","component stl","drawing pdf","manifest json","bom json"),
+        exporters=(
+            {"type":"step","implementation":"automotive.export_vehicle_step"},
+            {"type":"stl","implementation":"automotive.export_vehicle_stl"},
+            {"type":"pdf","implementation":"automotive.export_vehicle_drawing_pdf"},
+            {"type":"json","implementation":"automotive.vehicle_manifest / vehicle_bom"},
+        ),
+        verification_checks=("parameter consistency: CALCULATED","component placement: CALCULATED","range: UNRESOLVED","strength and safety: UNSUPPORTED"),
+    )
+
+    def default_design(self):
+        from .automotive import VehicleGenerationRequest, make_vehicle_design
+        request = VehicleGenerationRequest(
+            expected_revision=1, overall_length_mm=4200, overall_width_mm=1800, occupant_capacity=2,
+            target_range_km=300, body_height_mm=1400, wheelbase_mm=2520, front_track_mm=1575,
+            rear_track_mm=1575, tire_outer_diameter_mm=650, tire_width_mm=225, ground_clearance_mm=150,
+            frame_rail_width_mm=60, frame_rail_height_mm=80, body_width_mm=1260, body_length_mm=4200,
+        )
+        return make_vehicle_design(request, 1, [])
+
+    def validate_state(self, design):
+        from .automotive import VehicleDesign
+        VehicleDesign.model_validate(design.model_dump(mode="json"))
+
+    def calculate(self, design):
+        from .automotive import vehicle_calculate
+        self.validate_state(design)
+        return vehicle_calculate(design)
+
+    def verify(self, design):
+        from .automotive import vehicle_calculate
+        result = vehicle_calculate(design)
+        return {
+            "dimensional_consistency":{"state":"CALCULATED","summary":"Specified and assumed packaging dimensions satisfy the family checks.","evidence":["VehicleParameters cross-field validation passed."]},
+            "wheel_placement":{"state":"CALCULATED","summary":"Four wheel/tire centers and axle references are derived from wheelbase and track.","evidence":[f"Wheelbase {design.requirements.wheelbase_mm.value:g} mm; front/rear track {design.requirements.front_track_mm.value:g}/{design.requirements.rear_track_mm.value:g} mm."]},
+            "target_range":{"state":"UNRESOLVED","summary":"The requested range is a target and was not calculated.","evidence":[]},
+            "strength_safety":{"state":"UNSUPPORTED","summary":"No structural, crash, road-safety, or manufacturing analysis is implemented.","evidence":[]},
+        }
+
+    def generate_geometry(self, design):
+        from .automotive import build_vehicle_assembly
+        self.validate_state(design)
+        return build_vehicle_assembly(design)
+
+
 class FamilyInitializationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     family_id: str = Field(min_length=1, max_length=80)
@@ -109,7 +168,7 @@ class GearExperimentRequest(BaseModel):
     input_speed_rpm: float = Field(default=900, gt=0)
 
 
-IMPLEMENTED_FAMILIES: dict[str, DesignFamily] = {"spur_gear_pair": SpurGearPairFamily()}
+IMPLEMENTED_FAMILIES: dict[str, DesignFamily] = {"spur_gear_pair": SpurGearPairFamily(), "electric_vehicle": ElectricVehicleFamily()}
 PLANNED_FAMILY_AREAS = (
     "Motors and electromechanical systems",
     "Aerospace and aerodynamics",

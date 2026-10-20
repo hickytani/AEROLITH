@@ -122,6 +122,7 @@ test('FIT frames the union of visible component bounds and camera presets remain
   const iso = cameraFitPose(bounds.min, bounds.max, 1.5, 36, 'iso');
   const top = cameraFitPose(bounds.min, bounds.max, 1.5, 36, 'top');
   const front = cameraFitPose(bounds.min, bounds.max, 1.5, 36, 'front');
+  const vehicleFront = cameraFitPose([-2100,-900,0],[2100,900,1400],1.4,36,'vehicle-front');
   for (const pose of [iso, top, front]) {
     assert.deepEqual(pose.target, [54, 0, 0]);
     assert.ok(pose.distance > 0);
@@ -130,6 +131,7 @@ test('FIT frames the union of visible component bounds and camera presets remain
   assert.deepEqual(top.up, [0, 1, 0]);
   assert.notDeepEqual(iso.position, top.position);
   assert.notDeepEqual(front.position, top.position);
+  assert.ok(vehicleFront.position[0] > vehicleFront.target[0]);
   assert.equal(unionBounds([]), null);
 });
 
@@ -255,4 +257,17 @@ test('Studio prompt intake is wired to a reviewable specification and explicit r
   assert.match(script, /body\.expected_revision = expectedRevision \?\? project\.revision/);
   assert.match(script, /generator_available \? '' : ' · no geometry generator'/);
   assert.match(style, /\.specification-review\s*\{[^}]*overflow:\s*auto/);
+});
+
+test('component assistant is selected-part bound and submits a context question to the local API', async () => {
+  const [markup, script, style] = await Promise.all([
+    readFile(new URL('../public/index.html', import.meta.url), 'utf8'),
+    readFile(new URL('../public/app.js', import.meta.url), 'utf8'),
+    readFile(new URL('../public/style.css', import.meta.url), 'utf8'),
+  ]);
+  assert.match(markup, /id="component-question"/);
+  assert.match(markup, /id="component-answer"/);
+  assert.match(script, /component_id.{0,20}selectedId/);
+  assert.match(script, /request\('\/components\/explain'/);
+  assert.match(style, /\.component-assistant\s*\{/);
 });

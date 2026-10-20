@@ -1,0 +1,8 @@
+{
+  "suite_version": "engineering-eval-v1",
+  "candidate_must_beat_or_match_base_exact_subset_accuracy": true,
+  "minimum_candidate_json_valid_rate": 1.0,
+  "manual_review_required": true,
+  "automatic_promotion": false,
+  "test_split_reuse_policy": "Do not use repeated final-test results to tune training or thresholds."
+}

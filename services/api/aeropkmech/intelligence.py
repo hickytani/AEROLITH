@@ -41,9 +41,9 @@ class SpecificationParameter(BaseModel):
     meaning: str
     value: int | float | str | None
     unit: str
-    source: Literal["user-provided", "derived", "missing"]
+    source: Literal["user-provided", "derived", "assumed", "missing"]
     evidence: str | None
-    status: Literal["PROPOSED", "DERIVED", "MISSING", "INVALID"]
+    status: Literal["PROPOSED", "DERIVED", "ASSUMED", "MISSING", "INVALID"]
 
 
 class SpecificationComponent(BaseModel):
@@ -74,10 +74,10 @@ class EngineeringSpecification(BaseModel):
     schema_version: Literal["1.0"] = "1.0"
     provider: str = "deterministic-patterns-v1"
     request: str
-    intent: Literal["SUPPORTED_SPUR_GEAR_PAIR", "CONCEPTUAL_ELECTRIC_VEHICLE", "UNSUPPORTED_OR_UNCLEAR"]
+    intent: Literal["SUPPORTED_SPUR_GEAR_PAIR", "CONCEPTUAL_ELECTRIC_VEHICLE", "SUPPORTED_ELECTRIC_VEHICLE", "UNSUPPORTED_OR_UNCLEAR"]
     system_name: str
     domain: Literal["mechanical", "automotive", "unknown"]
-    generation_status: Literal["SPECIFICATION_REVIEW", "CONCEPTUAL_ONLY", "UNSUPPORTED_OR_UNCLEAR"]
+    generation_status: Literal["SPECIFICATION_REVIEW", "GEOMETRY_REVIEW", "CONCEPTUAL_ONLY", "UNSUPPORTED_OR_UNCLEAR"]
     family_id: str | None
     family_schema_version: str | None
     parameters: list[SpecificationParameter]
@@ -217,26 +217,29 @@ def propose_specification(text: str) -> EngineeringSpecification:
             evidence=parameter.evidence,
             status=parameter.status,
         ) for parameter in vehicle.parameters]
+        required_names = {"occupant_capacity", "overall_length_mm", "overall_width_mm", "target_range_km", "propulsion_type"}
+        supplied = {item.name for item in parameters if item.source == "user-provided" and item.value is not None}
+        ready = required_names.issubset(supplied) and not vehicle.validation_issues
         components = [SpecificationComponent(
             id=node.id, name=node.name, kind=node.kind, parent_id=node.parent_id,
             role=node.role, parameter_refs=node.parameter_refs,
-            status="CONCEPTUAL_ONLY", generator_available=False,
+            status="PROPOSED" if ready else "CONCEPTUAL_ONLY", generator_available=ready,
         ) for node in vehicle.nodes]
         connections = [SpecificationConnection(
             id=relationship.id, source_component=relationship.source_id,
             target_component=relationship.target_id, relationship=relationship.relationship,
-            parameter_refs=[], status="CONCEPTUAL_ONLY",
+            parameter_refs=[], status="PROPOSED",
         ) for relationship in vehicle.relationships]
         return EngineeringSpecification(
-            request=text, intent="CONCEPTUAL_ELECTRIC_VEHICLE",
-            system_name=vehicle.system_name, domain="automotive", generation_status="CONCEPTUAL_ONLY",
-            family_id=None, family_schema_version=None, parameters=parameters,
-            components=components, connections=connections, supported_artifacts=[],
+            request=text, intent="SUPPORTED_ELECTRIC_VEHICLE" if ready else "CONCEPTUAL_ELECTRIC_VEHICLE",
+            system_name=vehicle.system_name, domain="automotive", generation_status="GEOMETRY_REVIEW" if ready else "CONCEPTUAL_ONLY",
+            family_id="electric_vehicle" if ready else None, family_schema_version="1.0" if ready else None, parameters=parameters,
+            components=components, connections=connections, supported_artifacts=["STEP", "STL", "component STL", "layout drawing PDF", "manifest JSON", "BOM JSON"] if ready else [],
             assumptions=vehicle.assumptions, limitations=vehicle.limitations,
             unresolved_questions=vehicle.unresolved_questions,
             conflicts=[], validation_issues=vehicle.validation_issues,
-            unsupported_requests=["No automotive design family or vehicle geometry generator is implemented; this response is a conceptual architecture proposal only."],
-            can_commit=False,
+            unsupported_requests=[],
+            can_commit=ready,
         )
 
     extraction = extract_local(text)

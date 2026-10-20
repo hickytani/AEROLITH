@@ -1,0 +1,17 @@
+[project]
+name = "aeropkmech-ml-training"
+version = "0.1.0"
+description = "Isolated, reproducible local QLoRA experiments for AeroPKmech"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "accelerate==1.6.0",
+  "datasets==3.5.0",
+  "peft==0.15.2",
+  "transformers==4.51.3",
+  "trl==0.15.2",
+  "torch==2.6.0",
+  "bitsandbytes==0.45.5; platform_system == 'Linux'",
+]
+
+[tool.uv]
+package = false

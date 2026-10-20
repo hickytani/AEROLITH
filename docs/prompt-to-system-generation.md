@@ -58,4 +58,27 @@ The next coherent implementation is a bounded EV geometry family beginning with 
 - `git diff --check`: passed.
 - No new browser visual acceptance run was completed for the prompt-review experience. The checks above verify API, schema, revision guard, frontend contracts, and build behavior; visual review of prompt editing and the conceptual EV display remains outstanding.
 
-No changes were committed or pushed for this milestone; the directive requires explicit authorization for those Git operations.
+No changes were committed or pushed for that milestone.
+
+## Sprint 5: EV envelope generation vertical slice
+
+The EV prompt now dispatches to `electric_vehicle@1.0`. Prompt-specified occupants, overall length/width, range and electric propulsion retain units, evidence and provenance. Missing packaging dimensions are configurable in the review form and marked `ASSUMED`; wheelbase, tracks, tire dimensions, body height, ground clearance and frame/body envelopes never masquerade as prompt input. A validated request is committed into the same `data/project.json` revision/history as the gear family with an optimistic revision check.
+
+CadQuery produces 27 separate conceptual solids: four frame members, front/rear axle references, four each of tires/rims/hubs/suspension-link envelopes, a body envelope, and battery/motor/inverter/reduction-drive envelopes. Default wheel tracks and tire widths define the requested 1,800 mm vehicle width; the narrower body envelope leaves the four tire envelopes visible. Actual assembly bounds match the requested 4,200 × 1,800 mm outer envelope. The assembly manifest provides IDs, hierarchy, family, parent, bounding dimensions, centers/transforms, coordinate convention, interfaces, generator version and revision-bound mesh references. The BOM comes from that same manifest and leaves material, mass and cost unknown. Deterministic checks compare actual assembly bounds to the canonical overall envelope and calculate wheel centers from wheelbase/tracks.
+
+Revision-bound outputs include component/assembly STL, assembly STEP, an A3 vector PDF with top/side/front projections and dimension labels, manifest JSON, BOM JSON, and a conceptual engineering note. Artifact metadata records checksums, generator version and coarse dependencies; changed revisions make prior outputs stale. The Studio uses the existing checksum- and revision-validated mesh pipeline and provides per-component visibility/selection, fit and standard views. EV front view aligns with the vehicle's X-forward coordinate convention.
+
+**Engineering boundary:** these are packaging envelopes and illustrative mounting interfaces. The 300 km range is not calculated. There is no mass, energy/battery sizing, motor rating, structural strength, suspension dynamics, crashworthiness, thermal, regulatory, safety or manufacturing analysis. Assumed wheelbase, track, tires and package placements require review. A prompt change creates a reviewed new revision; persisted EV fields are not yet exposed in the general-purpose edit rail.
+
+Sprint 5 verification is recorded below. Chrome acceptance exercised the EV prompt review and commit, all 27 current-revision component meshes, selection/visibility, front and ISO views, and layout PDF/manifest/BOM/STEP/STL downloads. It ran at 1440×900 and 1280×720 with no browser runtime or console errors. Screenshots and machine-readable evidence are kept in the ignored local `artifacts/` directory. This is a local acceptance check, not cross-browser or deployment testing.
+
+### Sprint 5 verification record
+
+- `npm test`: **69 Python tests and 13 Node tests passed**, with the existing Starlette/httpx deprecation warning.
+- `npm run build:web`, standalone TypeScript, and JavaScript syntax checks passed.
+- Chrome flow at 1440×900 and 1280×720: prompt proposal displayed evidence and editable assumptions; explicit commit created revision 2; all 27 component meshes returned HTTP 200 for that revision; WebGL canvas rendered; selection and first-click visibility toggling worked; front/ISO camera buttons worked; no runtime/console errors.
+- Layout PDF, manifest JSON, BOM JSON, assembly STEP and STL returned HTTP 200 with matching revision and SHA-256 headers. Manifest and BOM each reported 27 components; PDF began with `%PDF-`.
+- A 27-thread artifact-index publication check passed. Concurrent geometry requests had previously exposed a Windows atomic-replace race; artifact publication and index reads now use a process-local lock.
+- Visual inspection confirmed the tires remain visible beyond the narrower body envelope and the 4,200 × 1,800 mm outer dimensions match the prompt. Browser screenshots: `artifacts/sprint5-ev-desktop.png` and `artifacts/sprint5-ev-1280x720.png`; structured results: `artifacts/sprint5-browser-acceptance.json`.
+
+The local artifact-index lock does not provide a multi-process or multi-writer guarantee. Browser acceptance covers this Chrome environment and these two viewport sizes only.

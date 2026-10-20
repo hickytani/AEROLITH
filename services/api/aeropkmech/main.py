@@ -3,7 +3,10 @@ from __future__ import annotations
 import os
 import html
 import hashlib
+import json
 import uuid
+import re
+from threading import RLock
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -13,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, Field
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet
@@ -22,6 +26,7 @@ from io import BytesIO
 from . import cad, store
 from . import artifacts as artifact_store
 from .domain import Design, EditRequest, InterpretRequest
+from .automotive import VehicleDesign, VehicleGenerationRequest, make_vehicle_design, vehicle_bom, vehicle_manifest, export_vehicle_drawing_pdf, export_vehicle_component_stl, export_vehicle_step, export_vehicle_stl
 from .engineering import calculation_details, derive, validate
 from .families import (
     IMPLEMENTED_FAMILIES,
@@ -33,13 +38,20 @@ from .families import (
     list_families,
 )
 from .intelligence import extract, propose_specification
+from .model_platform import (
+    ComponentAnswer, ModelRegistry, ModelState, ModelUnavailable, OllamaProvider,
+    OllamaRequirementProvider, component_context, configured_runtime_model, redact_sensitive, validate_split_files, validate_tool_proposal,
+)
 from .verification import VerificationState, summarize
 
 app = FastAPI(title="AeroPKmech API", version="0.2.0", description="Versioned educational spur gear design workflow")
-app.add_middleware(CORSMiddleware, allow_origins=["http://127.0.0.1:3000", "http://localhost:3000"], allow_methods=["GET", "POST", "PATCH"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=["http://127.0.0.1:3000", "http://localhost:3000"], allow_methods=["GET", "POST", "PATCH", "DELETE"], allow_headers=["*"])
 ROOT = Path(__file__).resolve().parents[3]
 ARTIFACTS = Path(os.environ.get("AEROPKMECH_ARTIFACTS_DIR", ROOT / "artifacts"))
 PUBLIC = ROOT / "public"
+LEARNING = Path(os.environ.get("AEROPKMECH_LEARNING_DIR", ROOT / "data" / "learning"))
+MODEL_REGISTRY = ModelRegistry(Path(os.environ.get("AEROPKMECH_MODEL_REGISTRY", ROOT / "data" / "models" / "registry.json")))
+_LEARNING_LOCK = RLock()
 THREE_VENDOR = ROOT / "node_modules" / "three"
 if THREE_VENDOR.is_dir():
     app.mount("/vendor", StaticFiles(directory=THREE_VENDOR), name="three-vendor")
@@ -49,11 +61,20 @@ class ArtifactExecutionError(RuntimeError):
     pass
 
 
-def response(design: Design) -> dict:
+def require_current_revision(design):
+    latest = store.load()
+    if latest.revision != design.revision:
+        raise HTTPException(status_code=409, detail=f"Design changed from revision {design.revision} to {latest.revision} during artifact generation.", headers={"X-Design-Revision":str(latest.revision)})
+
+
+def response(design: Design | VehicleDesign) -> dict:
     family = get_family(design.family, design.schema_version)
     family.validate_state(design)
-    verification = {key: item.model_dump(mode="json") for key, item in family.verify(design).items()}
-    return {**design.model_dump(mode="json"), "derived": family.calculate(design), "calculations": calculation_details(design), "validation": validate(design), "verification": verification}
+    verification = {key: item.model_dump(mode="json") if hasattr(item, "model_dump") else item for key, item in family.verify(design).items()}
+    result = {**design.model_dump(mode="json"), "derived": family.calculate(design), "verification": verification}
+    if design.family == "spur_gear_pair":
+        return {**result, "calculations": calculation_details(design), "validation": validate(design)}
+    return {**result, "calculations":{"provenance":{"method_version":"ev-envelope-0.1","design_revision":design.revision},"results":[]}, "validation":{"state":"PARTIAL","issues":["Conceptual packaging geometry only; range and safety remain unresolved."]}}
 
 
 @app.exception_handler(store.ProjectStateError)
@@ -74,6 +95,240 @@ async def artifact_execution_error(_, exc: ArtifactExecutionError):
 @app.get("/api/v1/health")
 def health():
     return {"ok": True, "service": "AeroPKmech API", "kernel": "CadQuery / Open CASCADE", "state": "local-file"}
+
+
+@app.get("/api/v1/model/status")
+async def model_status():
+    model_name, model_id = configured_runtime_model(MODEL_REGISTRY, os.environ.get("AEROPKMECH_OLLAMA_MODEL", ""))
+    if not model_name:
+        return {"provider": "deterministic-fallback", "configured": False, "available": False,
+                "status": "DISABLED", "model_id": None, "note": "No local model is selected. Deterministic workflows remain active."}
+    provider = OllamaProvider(model_name, os.environ.get("AEROPKMECH_OLLAMA_URL", "http://127.0.0.1:11434"))
+    available = await provider.health()
+    return {"provider": "ollama-local", "model": model_name, "model_id": model_id, "configured": True, "available": available,
+            "status": "READY" if available else "UNAVAILABLE", "endpoint": "loopback-only"}
+
+
+class ComponentQuestion(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    component_id: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
+    question: str = Field(min_length=3, max_length=2000)
+
+
+@app.post("/api/v1/components/explain")
+async def explain_component(request: ComponentQuestion):
+    design = store.load()
+    try:
+        context = component_context(design, request.component_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    deterministic = ComponentAnswer(
+        answer=(f"{context['component'].get('name', context['component'].get('id'))} is a {context['component'].get('role', context['component'].get('family', 'component'))} in revision {design.revision}. "
+                "The values below come from the committed project; conceptual envelope geometry does not establish structural or safety performance."),
+        evidence=[f"Current family: {design.family}", f"Canonical project revision: {design.revision}"],
+        limitations=["This response is grounded in stored project metadata; no independent strength, safety, or performance analysis is implied."],
+    )
+    model_name, model_id = configured_runtime_model(MODEL_REGISTRY, os.environ.get("AEROPKMECH_OLLAMA_MODEL", ""))
+    if not model_name:
+        return {**deterministic.model_dump(), "provider": "deterministic-context", "model_available": False, "revision": design.revision}
+    provider = OllamaProvider(model_name, os.environ.get("AEROPKMECH_OLLAMA_URL", "http://127.0.0.1:11434"))
+    if not await provider.health():
+        return {**deterministic.model_dump(), "provider": "deterministic-context", "model_available": False, "revision": design.revision, "model_status": "UNAVAILABLE"}
+    system = ("Answer a question about the selected engineering component using only supplied JSON context. "
+              "Do not infer ratings, materials, safety, achieved range, or missing specifications. Return JSON with answer, evidence, limitations. "
+              "The result is advisory and cannot change the design.")
+    prompt = json.dumps({"question": request.question, "context": context}, ensure_ascii=False)[:12000]
+    try:
+        raw = await provider.generate(prompt, system=system)
+        answer = ComponentAnswer.model_validate_json(raw)
+        current = store.load()
+        if current.revision != design.revision:
+            raise HTTPException(status_code=409, detail="Project changed while the component explanation was being generated.", headers={"X-Design-Revision": str(current.revision)})
+        return {**answer.model_dump(), "provider": "ollama-local", "model": model_name, "model_id": model_id, "model_available": True, "revision": design.revision}
+    except ModelUnavailable:
+        return {**deterministic.model_dump(), "provider": "deterministic-context", "model_available": False, "revision": design.revision, "model_status": "INFERENCE_FAILED"}
+    except (ValueError, json.JSONDecodeError):
+        return {**deterministic.model_dump(), "provider": "deterministic-context", "model_available": True, "revision": design.revision, "model_status": "INVALID_MODEL_OUTPUT"}
+
+
+class TraceCapture(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    opt_in: Literal[True]
+    input_text: str = Field(min_length=1, max_length=20000)
+    structured_output: dict = Field(default_factory=dict)
+    tool_results: list[dict] = Field(default_factory=list, max_length=50)
+    correction: str | None = Field(default=None, max_length=10000)
+    final_revision: int | None = Field(default=None, ge=1)
+
+
+class ModelCandidateMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    model_id: str = Field(min_length=1, max_length=120)
+    runtime_model: str = Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_.:-]+$")
+    base_model: str = Field(min_length=1, max_length=200)
+    base_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+    dataset_version: str = Field(min_length=1, max_length=100)
+    dataset_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    training_config_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    adapter_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    evaluation_suite: str = Field(min_length=1, max_length=100)
+    metrics: dict
+    environment: dict
+
+
+class ModelTransitionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    state: Literal["EVALUATED", "APPROVED", "REJECTED", "ACTIVE"]
+    metrics: dict | None = None
+    decision: str | None = Field(default=None, max_length=1000)
+
+
+@app.post("/api/v1/learning/traces")
+def capture_learning_trace(request: TraceCapture):
+    if os.environ.get("AEROPKMECH_ENABLE_TRAINING_CAPTURE", "false").lower() != "true":
+        raise HTTPException(status_code=403, detail="Training data capture is disabled. Enable it explicitly in local configuration first.")
+    trace_id = f"trace-{uuid.uuid4().hex}"
+    record = {"id": trace_id, "captured_at": datetime.now(timezone.utc).isoformat(),
+              "origin": "opt_in_execution_trace", "review_status": "UNREVIEWED",
+              "input_text": redact_sensitive(request.input_text),
+              "structured_output": json.loads(redact_sensitive(json.dumps(request.structured_output, ensure_ascii=False))),
+              "tool_results": json.loads(redact_sensitive(json.dumps(request.tool_results, ensure_ascii=False))),
+              "correction": redact_sensitive(request.correction) if request.correction else None,
+              "final_revision": request.final_revision, "curation": "raw_only"}
+    directory = LEARNING / "raw-traces"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{trace_id}.json"
+    with _LEARNING_LOCK:
+        path.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
+    return {"id": trace_id, "stored": True, "review_status": "UNREVIEWED", "curation": "raw_only"}
+
+
+@app.delete("/api/v1/learning/traces/{trace_id}")
+def delete_learning_trace(trace_id: str):
+    if not re.fullmatch(r"trace-[0-9a-f]{32}", trace_id):
+        raise HTTPException(status_code=404, detail="Trace not found.")
+    path = LEARNING / "raw-traces" / f"{trace_id}.json"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Trace not found.")
+    quarantine = LEARNING / "quarantine"
+    quarantine.mkdir(parents=True, exist_ok=True)
+    with _LEARNING_LOCK:
+        os.replace(path, quarantine / f"{trace_id}.json")
+    return {"id": trace_id, "deleted": True, "quarantined": True}
+
+
+class TraceCuration(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    human_reviewed: Literal[True]
+    reviewer: str = Field(min_length=1, max_length=100)
+    source_license: str = Field(min_length=1, max_length=200)
+    task_category: Literal["requirement_extraction", "constraint_interpretation", "assembly_planning", "engineering_tool_use", "component_understanding", "change_impact", "failure_handling", "engineering_explanation"]
+    expected_output: dict
+
+
+class TraceReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    decision: Literal["APPROVED", "REJECTED"]
+    reviewer: str = Field(min_length=1, max_length=100)
+    review_note: str = Field(min_length=1, max_length=2000)
+
+
+@app.post("/api/v1/learning/traces/{trace_id}/review")
+def review_learning_trace(trace_id: str, request: TraceReview):
+    if not re.fullmatch(r"trace-[0-9a-f]{32}", trace_id):
+        raise HTTPException(status_code=404, detail="Trace not found.")
+    path = LEARNING / "raw-traces" / f"{trace_id}.json"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Trace not found.")
+    with _LEARNING_LOCK:
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record["review_status"] = request.decision
+        record["review"] = {"reviewer": request.reviewer, "note": redact_sensitive(request.review_note), "reviewed_at": datetime.now(timezone.utc).isoformat()}
+        path.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
+    return {"id": trace_id, "review_status": request.decision}
+
+
+@app.post("/api/v1/learning/traces/{trace_id}/curate")
+def curate_learning_trace(trace_id: str, request: TraceCuration):
+    if not re.fullmatch(r"trace-[0-9a-f]{32}", trace_id):
+        raise HTTPException(status_code=404, detail="Trace not found.")
+    raw_path = LEARNING / "raw-traces" / f"{trace_id}.json"
+    if not raw_path.is_file():
+        raise HTTPException(status_code=404, detail="Trace not found.")
+    raw = json.loads(raw_path.read_text(encoding="utf-8"))
+    if raw.get("review_status") != "APPROVED":
+        raise HTTPException(status_code=409, detail="Only explicitly approved traces can be curated.")
+    example = {"id": trace_id, "task_category": request.task_category, "input": raw["input_text"],
+               "context": {"tool_results": raw["tool_results"], "final_revision": raw["final_revision"]},
+               "expected_output": request.expected_output, "schema_version": "1.0",
+               "provenance": {"origin": "reviewed_execution_trace", "reviewer": request.reviewer,
+                              "source_license": request.source_license, "review_status": "APPROVED"},
+               "dataset_version": "engineering-v2.0.0", "validation": {"secrets_redacted": True, "human_reviewed": True}}
+    target = LEARNING / "curated" / "engineering-v2.jsonl"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with _LEARNING_LOCK:
+        existing = target.read_text(encoding="utf-8").splitlines() if target.exists() else []
+        if any(json.loads(line).get("id") == trace_id for line in existing if line.strip()):
+            raise HTTPException(status_code=409, detail="Trace is already in the curated dataset.")
+        with target.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(example, ensure_ascii=False) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+    return {"id": trace_id, "curated": True, "dataset_version": "engineering-v2", "review_status": "APPROVED"}
+
+
+@app.get("/api/v1/learning/dataset/status")
+def learning_dataset_status(version: Literal["1.0.0", "engineering-v2.0.0"] = "1.0.0"):
+    try:
+        directory = LEARNING if version == "1.0.0" else LEARNING / "engineering-v2"
+        return validate_split_files(directory)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=422, detail=f"Dataset validation failed: {exc}") from exc
+
+
+@app.post("/api/v1/engineering/tools/validate-proposal")
+def validate_engineering_tool_proposal(payload: dict):
+    try:
+        return validate_tool_proposal(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/models/registry")
+def get_model_registry():
+    try:
+        return MODEL_REGISTRY.read()
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=503, detail=f"Model registry is unavailable: {exc}") from exc
+
+
+@app.post("/api/v1/models/registry/candidates", status_code=201)
+def register_model_candidate(request: ModelCandidateMetadata):
+    try:
+        return MODEL_REGISTRY.register(request.model_dump())
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.patch("/api/v1/models/registry/{model_id}")
+def transition_model_candidate(model_id: str, request: ModelTransitionRequest):
+    try:
+        return MODEL_REGISTRY.transition(model_id, ModelState(request.state), metrics=request.metrics, decision=request.decision)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/models/registry/rollback")
+def rollback_active_model():
+    try:
+        model_id = MODEL_REGISTRY.rollback()
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=503, detail=f"Model registry is unavailable: {exc}") from exc
+    if model_id is None:
+        raise HTTPException(status_code=409, detail="No approved rollback model is recorded.")
+    return {"active_model_id": model_id, "rolled_back": True}
 
 
 @app.get("/api/v1/platform/openapi", include_in_schema=False)
@@ -148,6 +403,8 @@ def gear_experiment(parameters: GearExperimentRequest):
 @app.patch("/api/v1/project")
 def edit_project(edit: EditRequest):
     current = store.load()
+    if current.family != "spur_gear_pair":
+        raise HTTPException(status_code=422, detail="This project belongs to the electric_vehicle family. Submit reviewed EV parameters to /api/v1/project/vehicle/generate.")
     values = edit.model_dump(exclude_none=True)
     expected_revision = values.pop("expected_revision", None)
     if expected_revision is not None and expected_revision != current.revision:
@@ -175,7 +432,50 @@ def edit_project(edit: EditRequest):
 
 @app.post("/api/v1/project/interpret")
 async def interpret(request: InterpretRequest):
+    model_name, _ = configured_runtime_model(MODEL_REGISTRY, os.environ.get("AEROPKMECH_OLLAMA_MODEL", ""))
+    use_model = os.environ.get("AEROPKMECH_ENABLE_MODEL_EXTRACTION", "false").lower() == "true"
+    if model_name and use_model:
+        provider = OllamaRequirementProvider(model_name, os.environ.get("AEROPKMECH_OLLAMA_URL", "http://127.0.0.1:11434"))
+        try:
+            result = await extract(request.text, provider)
+            result_dict = result.model_dump(mode="json")
+            result_dict["model_status"] = "PROPOSED_REQUIRES_REVIEW"
+            return result_dict
+        except (ModelUnavailable, ValueError):
+            fallback = (await extract(request.text)).model_dump(mode="json")
+            fallback["model_status"] = "UNAVAILABLE_OR_INVALID_OUTPUT_DETERMINISTIC_FALLBACK"
+            return fallback
     return (await extract(request.text)).model_dump(mode="json")
+
+
+class ChangeImpactRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int = Field(ge=1)
+    changed_parameters: list[str] = Field(min_length=1, max_length=30)
+
+
+@app.post("/api/v1/project/change-impact")
+def project_change_impact(request: ChangeImpactRequest):
+    design = store.load()
+    if request.expected_revision != design.revision:
+        raise HTTPException(status_code=409, detail="Project revision changed; reload before previewing change impact.", headers={"X-Design-Revision": str(design.revision)})
+    if design.family == "electric_vehicle":
+        allowed = set(type(design.requirements).model_fields) - {"propulsion_layout"}
+        affected = ["vehicle component geometry", "assembly STEP/STL", "layout drawing PDF", "manifest JSON", "BOM JSON", "calculations and dimensional checks"]
+    else:
+        allowed = set(type(design.requirements).model_fields) | {"pinion_teeth", "gear_teeth"}
+        affected = ["affected gear component meshes", "assembly STEP/STL", "engineering report", "kinematic calculations", "verification summary"]
+    unknown = sorted(set(request.changed_parameters) - allowed)
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"Unsupported parameter(s) for {design.family}: {', '.join(unknown)}")
+    try:
+        artifacts = artifact_store.list_artifacts(ARTIFACTS, design)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail="Artifact state is unavailable for change-impact analysis.") from exc
+    return {"family": design.family, "source_revision": design.revision, "changed_parameters": sorted(set(request.changed_parameters)),
+            "affected_outputs": affected, "currently_stale_artifacts": [item["artifact_id"] for item in artifacts if item["stale"]],
+            "outputs_will_become_stale_after_commit": True, "design_mutated": False,
+            "note": "Dependency mapping is conservative and family-level; each listed output must be regenerated or recalculated after the reviewed edit."}
 
 
 @app.post("/api/v1/specifications/propose")
@@ -184,14 +484,37 @@ def propose_project_specification(request: InterpretRequest):
     return propose_specification(request.text).model_dump(mode="json")
 
 
+@app.post("/api/v1/project/vehicle/generate")
+def generate_vehicle_project(request: VehicleGenerationRequest):
+    """Commit a reviewed EV envelope spec through the shared project file/revision history."""
+    current = store.load()
+    if request.expected_revision != current.revision:
+        raise HTTPException(status_code=409, detail=f"Project revision advanced from {request.expected_revision} to {current.revision}.", headers={"X-Design-Revision": str(current.revision)})
+    history = [*current.history, {"revision":current.revision,"changed_at":current.updated_at,"design":current.model_dump(mode="json")}]
+    try:
+        candidate = make_vehicle_design(request, current.revision + 1, history)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    store.save(candidate)
+    return response(candidate)
+
+
 @app.get("/api/v1/export/stl")
 def export_stl():
     design = store.load()
     ARTIFACTS.mkdir(parents=True, exist_ok=True)
     temporary = ARTIFACTS / f".generating-{uuid.uuid4().hex}.stl"
     try:
-        cad.export_stl(design, temporary)
-        path, metadata = artifact_store.publish(temporary.read_bytes(), ARTIFACTS, design, "assembly", "stl", cad.GENERATOR_VERSION)
+        if design.family == "electric_vehicle":
+            export_vehicle_stl(design, temporary)
+            generator_version = "cq-ev-envelope-0.1"
+        else:
+            cad.export_stl(design, temporary)
+            generator_version = cad.GENERATOR_VERSION
+        require_current_revision(design)
+        path, metadata = artifact_store.publish(temporary.read_bytes(), ARTIFACTS, design, "assembly", "stl", generator_version)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise ArtifactExecutionError(f"CadQuery STL export failed: {exc}") from exc
     finally:
@@ -205,8 +528,16 @@ def export_step():
     ARTIFACTS.mkdir(parents=True, exist_ok=True)
     temporary = ARTIFACTS / f".generating-{uuid.uuid4().hex}.step"
     try:
-        cad.export_step(design, temporary)
-        path, metadata = artifact_store.publish(temporary.read_bytes(), ARTIFACTS, design, "assembly", "step", cad.GENERATOR_VERSION)
+        if design.family == "electric_vehicle":
+            export_vehicle_step(design, temporary)
+            generator_version = "cq-ev-envelope-0.1"
+        else:
+            cad.export_step(design, temporary)
+            generator_version = cad.GENERATOR_VERSION
+        require_current_revision(design)
+        path, metadata = artifact_store.publish(temporary.read_bytes(), ARTIFACTS, design, "assembly", "step", generator_version)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise ArtifactExecutionError(f"CadQuery STEP export failed: {exc}") from exc
     finally:
@@ -215,8 +546,12 @@ def export_step():
 
 
 @app.get("/api/v1/geometry/{component_id}.stl")
-def component_geometry(component_id: Literal["pinion", "gear"], revision: int | None = Query(default=None, ge=1)):
+def component_geometry(component_id: str, revision: int | None = Query(default=None, ge=1)):
     design = store.load()
+    if design.family == "spur_gear_pair" and component_id not in {"pinion", "gear"}:
+        raise HTTPException(status_code=404, detail=f"Unknown spur-gear component '{component_id}'.")
+    if design.family == "electric_vehicle" and component_id not in {item["id"] for item in vehicle_manifest(design)["components"]}:
+        raise HTTPException(status_code=404, detail=f"Unknown vehicle component '{component_id}'.")
     if revision is not None and revision != design.revision:
         raise HTTPException(
             status_code=409,
@@ -226,7 +561,10 @@ def component_geometry(component_id: Literal["pinion", "gear"], revision: int | 
     ARTIFACTS.mkdir(parents=True, exist_ok=True)
     temporary = ARTIFACTS / f".generating-{uuid.uuid4().hex}.stl"
     try:
-        cad.export_component_stl(design, component_id, temporary)
+        if design.family == "electric_vehicle":
+            export_vehicle_component_stl(design, component_id, temporary)
+        else:
+            cad.export_component_stl(design, component_id, temporary)
         latest = store.load()
         if latest.revision != design.revision:
             raise HTTPException(
@@ -234,11 +572,12 @@ def component_geometry(component_id: Literal["pinion", "gear"], revision: int | 
                 detail=f"Design changed from revision {design.revision} to {latest.revision} while geometry was generated.",
                 headers={"X-Design-Revision": str(latest.revision)},
             )
-        path, metadata = artifact_store.publish(temporary.read_bytes(), ARTIFACTS, design, component_id, "stl", cad.GENERATOR_VERSION)
+        generator_version = "cq-ev-envelope-0.1" if design.family == "electric_vehicle" else cad.GENERATOR_VERSION
+        path, metadata = artifact_store.publish(temporary.read_bytes(), ARTIFACTS, design, component_id, "stl", generator_version)
     except HTTPException:
         raise
     except Exception as exc:
-        raise ArtifactExecutionError(f"CadQuery component tessellation failed: {exc}") from exc
+        raise ArtifactExecutionError(f"CadQuery component tessellation failed for {component_id}: {exc}") from exc
     finally:
         temporary.unlink(missing_ok=True)
     return FileResponse(
@@ -256,9 +595,53 @@ def component_geometry(component_id: Literal["pinion", "gear"], revision: int | 
     )
 
 
+def publish_vehicle_json_artifact(design: VehicleDesign, kind: str, payload: dict):
+    require_current_revision(design)
+    data = json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8")
+    path, metadata = artifact_store.publish(data, ARTIFACTS, design, kind, "json", "ev-envelope-0.1")
+    return FileResponse(path, media_type="application/json", filename=path.name, headers=artifact_headers(metadata, design.revision))
+
+
+@app.get("/api/v1/vehicle/manifest.json")
+def vehicle_manifest_export():
+    design = store.load()
+    if design.family != "electric_vehicle": raise HTTPException(status_code=409, detail="Current project is not an electric vehicle.")
+    return publish_vehicle_json_artifact(design, "manifest", vehicle_manifest(design))
+
+
+@app.get("/api/v1/vehicle/bom.json")
+def vehicle_bom_export():
+    design = store.load()
+    if design.family != "electric_vehicle": raise HTTPException(status_code=409, detail="Current project is not an electric vehicle.")
+    return publish_vehicle_json_artifact(design, "bom", vehicle_bom(design))
+
+
+@app.get("/api/v1/vehicle/layout.pdf")
+def vehicle_layout_export():
+    design = store.load()
+    if design.family != "electric_vehicle": raise HTTPException(status_code=409, detail="Current project is not an electric vehicle.")
+    ARTIFACTS.mkdir(parents=True, exist_ok=True)
+    temporary = ARTIFACTS / f".generating-{uuid.uuid4().hex}.pdf"
+    try:
+        export_vehicle_drawing_pdf(design, temporary)
+        require_current_revision(design)
+        path, metadata = artifact_store.publish(temporary.read_bytes(), ARTIFACTS, design, "layout-drawing", "pdf", "ev-envelope-0.1")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise ArtifactExecutionError(f"Vehicle layout drawing failed: {exc}") from exc
+    finally:
+        temporary.unlink(missing_ok=True)
+    return FileResponse(path, media_type="application/pdf", filename=path.name, headers=artifact_headers(metadata, design.revision))
+
+
 @app.get("/api/v1/report", response_class=HTMLResponse)
 def report():
     design = store.load()
+    if design.family == "electric_vehicle":
+        document = f"<!doctype html><meta charset='utf-8'><title>EV conceptual geometry R{design.revision}</title><h1>Concept EV packaging note</h1><p>Revision {design.revision} · {design.id} · conceptual only</p><h2>Parameters and provenance</h2><pre>{html.escape(design.requirements.model_dump_json(indent=2))}</pre><h2>Assembly manifest</h2><pre>{html.escape(json.dumps(vehicle_manifest(design),indent=2))}</pre><h2>Limits</h2><p>Range target is not calculated. No mass, structural, crash, thermal, regulatory, safety, or manufacturing verification is provided.</p>"
+        path, metadata = artifact_store.publish(document.encode("utf-8"), ARTIFACTS, design, "report", "html", "ev-envelope-0.1")
+        return FileResponse(path,media_type="text/html",headers=artifact_headers(metadata,design.revision))
     derived = derive(design)
     rows = "".join(f"<tr><td>{key}</td><td>{value:.3f}</td></tr>" for key, value in derived.items() if isinstance(value, (int, float)))
     assumptions = "".join(f"<li>{html.escape(item)}</li>" for item in design.assumptions)
@@ -284,6 +667,14 @@ def report():
 @app.get("/api/v1/report.pdf")
 def report_pdf():
     design = store.load()
+    if design.family == "electric_vehicle":
+        output = BytesIO()
+        doc = SimpleDocTemplate(output,pagesize=letter,title=f"EV packaging note revision {design.revision}",author="AeroPKmech Studio")
+        styles=getSampleStyleSheet()
+        p=design.requirements
+        doc.build([Paragraph("Concept EV packaging note",styles["Title"]),Paragraph(f"Revision {design.revision} · all dimensions mm · conceptual CAD envelopes only",styles["Normal"]),Spacer(1,12),Paragraph("Specified requirements",styles["Heading2"]),Paragraph(html.escape(p.model_dump_json(indent=2)),styles["Code"]),Spacer(1,12),Paragraph("Limits",styles["Heading2"]),Paragraph("The range value is a target, not a calculation. No mass, structural, crash, thermal, regulatory, safety, or manufacturing verification is provided.",styles["BodyText"]),Paragraph("Assumptions",styles["Heading2"]),*[Paragraph(html.escape(item),styles["BodyText"]) for item in design.assumptions]])
+        path,metadata=artifact_store.publish(output.getvalue(),ARTIFACTS,design,"report","pdf","ev-envelope-0.1")
+        return FileResponse(path,media_type="application/pdf",filename=path.name,headers=artifact_headers(metadata,design.revision))
     derived = derive(design)
     output = BytesIO()
     doc = SimpleDocTemplate(output, pagesize=letter, title=f"AeroPKmech revision {design.revision}", author="AeroPKmech Studio")
@@ -362,7 +753,7 @@ def download_artifact(filename: str):
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     if digest != metadata["sha256"]:
         return JSONResponse(status_code=409, content={"detail": "Artifact bytes do not match their recorded checksum.", "verification": {"state": VerificationState.FAILED.value}})
-    media_type = {".stl": "model/stl", ".step": "model/step", ".html": "text/html", ".pdf": "application/pdf"}.get(path.suffix, "application/octet-stream")
+    media_type = {".stl": "model/stl", ".step": "model/step", ".html": "text/html", ".pdf": "application/pdf", ".json":"application/json"}.get(path.suffix, "application/octet-stream")
     headers = artifact_headers(metadata, metadata["revision"], stale=metadata["stale"])
     return FileResponse(path, media_type=media_type, filename=path.name, headers=headers)
 
