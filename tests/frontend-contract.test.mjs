@@ -292,3 +292,20 @@ test('component assistant is selected-part bound and submits a context question 
   assert.match(script, /request\('\/components\/explain'/);
   assert.match(style, /\.component-assistant\s*\{/);
 });
+
+test('Studio shows selected-component assembly relationships and revision-bound check evidence from the API', async () => {
+  const [markup, script, style] = await Promise.all([
+    readFile(new URL('../public/index.html', import.meta.url), 'utf8'),
+    readFile(new URL('../public/app.js', import.meta.url), 'utf8'),
+    readFile(new URL('../public/style.css', import.meta.url), 'utf8'),
+  ]);
+  assert.match(markup, /id="assembly-inspector"/);
+  assert.ok(script.includes('project?.assembly_verification'));
+  assert.ok(script.includes('model.geometry_revision === project.revision'));
+  assert.ok(script.includes('item.component_ids.includes(selected.id)'));
+  assert.ok(script.includes('check.expected'));
+  assert.ok(script.includes('check.observed'));
+  assert.ok(script.includes('check.evidence'));
+  assert.ok(script.includes('check.limitations'));
+  assert.match(style, /\.assembly-inspector/);
+});

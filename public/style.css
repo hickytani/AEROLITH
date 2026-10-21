@@ -136,6 +136,11 @@ button:disabled { opacity: .58; cursor: wait; }
 .checks { margin: 16px 0; }
 .checks p { display: grid; grid-template-columns: 12px minmax(0,1fr) auto; align-items: start; gap: 7px; margin: 12px 0; color: #344b5c; font-size: 13px; line-height: 1.45; }
 .checks b { color: #405666; font: 600 12px/1.4 var(--font-mono); }
+.assembly-inspector { margin: 16px 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: #344b5c; }
+.assembly-inspector h3 { margin: 0 0 8px; color: var(--ink); font-size: 14px; }
+.assembly-inspector p, .assembly-inspector li { overflow-wrap: anywhere; font-size: 12px; line-height: 1.5; }
+.assembly-inspector ul { margin: 6px 0 12px; padding-left: 18px; }
+.assembly-inspector .assembly-evidence { color: var(--muted); }
 .status { width: 9px; height: 9px; margin-top: 4px; border-radius: 50%; background: #74838c; }
 
 @media (min-width: 1101px) {
@@ -168,6 +173,7 @@ footer { min-height: 48px; display: flex; align-items: center; justify-content: 
   .result-main { grid-row: 2 / 4; }
   .exports { grid-column: 2; }
   .checks { grid-column: 1; }
+  .assembly-inspector { grid-column: 1 / -1; }
   .note { grid-column: 2; grid-row: 3; align-self: start; }
 }
 @media (max-width: 760px) {

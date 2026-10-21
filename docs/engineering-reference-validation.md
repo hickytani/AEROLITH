@@ -45,3 +45,11 @@ For the default 18-tooth pinion, module 2 mm, the nominal addendum diameter is 4
 ## Verification status meaning
 
 `overall` is `PARTIAL` when implemented input consistency checks pass, and `FAILED` when they fail. It is deliberately never `PASSED`: strength, contact, thermal behavior, and service conditions are unresolved or untested. The failed input state means an implemented constraint was violated; it is not a finding of mechanical failure. Individual results retain their own evidence and scope.
+
+## Generated assembly geometry checks (Milestone 4)
+
+The `assembly_verification` object is a software/geometry consistency record, not an additional physical design standard. Check definitions are versioned as `assembly-relationships-0.1` and each row records the project revision and geometry revision it inspected.
+
+For gear assemblies, the generated CadQuery child transforms are compared with `a = m(z1 + z2)/2` at a `0.05 mm` translation tolerance. Both solid Z bounds are compared with accepted face width at `0.01 mm`; actual solid vertices are counted at the polygon root and tip radii within `0.01 mm`. The check also records solid validity/positive volume and the generator's 180/z2 degree display phase. The ratio check remains `PARTIAL`; tooth contact remains `UNOBSERVABLE`. These criteria verify the implementation's generated layout, not gear engagement, involute action, interference-free operation, strength, or manufacturing fitness.
+
+For EV assemblies, tire/rim/hub bbox centers, tire/axle references, rail symmetry, overall outer bounds, and crossmember locations are measured from actual generated CadQuery solids with `0.05 mm` location/dimension tolerance. Each modeled crossmember is Boolean-intersected with both rails; a positive OCCT overlap volume demonstrates intersection only. This model has no joint, restraint, fastener, mount datum, or clearance acceptance criteria, so package/frame mounting stays `UNOBSERVABLE` and overall assembly status remains `PARTIAL`. The checks provide no vehicle structural, dynamic, thermal, range, crash, safety, regulatory, or roadworthiness validation.

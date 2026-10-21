@@ -37,6 +37,10 @@ def test_vehicle_edit_regenerates_dependent_geometry_and_records_revision_and_ev
     assert changed["verification"]["wheel_axle_placement"]["state"] == "PASSED"
     assert changed["verification"]["frame_dimensions"]["state"] == "PASSED"
     assert changed["verification"]["mechanical_interfaces"]["state"] == "PARTIAL"
+    assembly = changed["assembly_verification"]
+    assert assembly["revision"] == assembly["geometry_revision"] == changed["revision"]
+    assert next(check for check in assembly["checks"] if check["id"] == "ev.running-gear.axle-reference-placement")["state"] == "PASSED"
+    assert all(component_id in {item["id"] for item in assembly["components"]} for component_id in changed["edit_result"]["regenerated_components"])
     assert changed["derived"]["wheel_centers"][0]["x_mm"] == 1350
     new_cad = vehicle_component_solids(store.load())
     assert set(initial_cad) == set(new_cad)

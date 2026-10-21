@@ -192,6 +192,47 @@ function setSelected(id) {
     mesh.material.color.setHex(meshId === id ? 0x14c2dc : color);
     mesh.material.emissive.setHex(meshId === id ? 0x05323b : 0x000000);
   }
+  renderAssemblyInspector();
+}
+
+function renderAssemblyInspector() {
+  const panel = byId('assembly-inspector');
+  const model = project?.assembly_verification;
+  if (!panel) return;
+  panel.replaceChildren(textElement('h3', 'Assembly relationships'));
+  if (!model) {
+    panel.append(textElement('p', 'Assembly relationship evidence is unavailable for this response.', 'assembly-evidence'));
+    return;
+  }
+  const sameRevision = model.revision === project.revision && model.geometry_revision === project.revision;
+  panel.append(textElement('p', `${model.assembly_id} · ${model.family_id} · ${model.overall_state} · design R${model.revision} / geometry R${model.geometry_revision}${sameRevision ? '' : ' · STALE EVIDENCE'}`, sameRevision ? 'assembly-evidence' : 'error'));
+  const selected = model.components.find((component) => component.id === selectedId);
+  if (selected) {
+    panel.append(textElement('strong', `${selected.id} · parent ${selected.parent_id}`));
+    panel.append(textElement('p', `Placement: ${JSON.stringify(selected.placement)} · bounds: ${selected.bounds_mm.join(' × ')} mm · valid solid: ${selected.geometry_valid} · volume: ${selected.volume_mm3.toPrecision(5)} mm³`));
+    panel.append(textElement('p', `Canonical parameter dependencies: ${selected.parameter_refs.join(', ') || 'none'}`, 'assembly-evidence'));
+  } else if (selectedId) {
+    panel.append(textElement('p', `No assembly component record matches selected component ${selectedId}.`, 'error'));
+  } else {
+    panel.append(textElement('p', 'Select a component to filter this assembly evidence. Showing all checks for the current revision.', 'assembly-evidence'));
+  }
+  const relationships = model.relationships.filter((item) => !selected || item.component_ids.includes(selected.id));
+  panel.append(textElement('strong', 'Relationships'));
+  const relationList = document.createElement('ul');
+  for (const relationship of relationships) relationList.append(textElement('li', `${relationship.id} · ${relationship.verification_state} · ${relationship.description}`));
+  if (!relationships.length) relationList.append(textElement('li', 'No relationship references this component.'));
+  panel.append(relationList);
+  const checks = model.checks.filter((item) => !selected || item.component_ids.includes(selected.id));
+  panel.append(textElement('strong', 'Evidence checks'));
+  const checkList = document.createElement('ul');
+  for (const check of checks) {
+    const expected = Object.keys(check.expected || {}).length ? ` · expected ${JSON.stringify(check.expected)}` : '';
+    const observed = Object.keys(check.observed || {}).length ? ` · observed ${JSON.stringify(check.observed)}` : '';
+    const evidence = check.evidence?.length ? ` · ${check.evidence.join(' ')}` : '';
+    const limitations = check.limitations?.length ? ` · Limits: ${check.limitations.join(' ')}` : '';
+    checkList.append(textElement('li', `${check.id} · ${check.state} · R${check.revision}/G${check.geometry_revision} · ${check.rule}${expected}${observed}${evidence}${limitations}`));
+  }
+  panel.append(checkList);
 }
 
 function disposeMeshes() {
@@ -711,6 +752,7 @@ function fill() {
       if (item.evidence?.length) row.title=item.evidence.join(' ');
       checks.append(row);
     }
+    renderAssemblyInspector();
     required('assumptions').textContent=project.assumptions.join(' ');
     return;
   }
@@ -761,6 +803,7 @@ function fill() {
     row.append(textElement('b', item.state));
     checks.append(row);
   }
+  renderAssemblyInspector();
   for (const input of document.querySelectorAll('.rail input')) input.disabled = applying;
   required('apply').disabled = applying;
 }

@@ -52,6 +52,12 @@ def test_gear_prompt_review_acceptance_regenerates_real_revision_bound_cad(tmp_p
     assert project["components"][0]["teeth"] == 20
     assert project["components"][1]["teeth"] == 60
     assert project["derived"]["center_distance_mm"] == 80
+    assembly = project["assembly_verification"]
+    assert assembly["revision"] == assembly["geometry_revision"] == project["revision"]
+    assert assembly["source_prompt_sha256"]
+    assert assembly["requirements"]["module_mm"]["source_span"]["text"] == "module 2 mm"
+    assert next(check for check in assembly["checks"] if check["id"] == "gear.profile-dimensions")["state"] == "PASSED"
+    assert next(check for check in assembly["checks"] if check["id"] == "gear.tooth-contact")["state"] == "UNOBSERVABLE"
 
     trace = project["requirement_traceability"]
     assert trace["source_prompt"] == GEAR_PROMPT
@@ -105,6 +111,11 @@ def test_ev_prompt_review_acceptance_regenerates_traceable_concept_assembly(tmp_
     assert project["verification"]["requirement_component_traceability"]["state"] == "PASSED"
     assert project["verification"]["mechanical_interfaces"]["state"] == "PARTIAL"
     assert project["verification"]["range_sizing"]["state"] == "UNKNOWN"
+    assembly = project["assembly_verification"]
+    assert assembly["revision"] == assembly["geometry_revision"] == project["revision"]
+    assert assembly["source_prompt_sha256"] == hashlib.sha256(EV_PROMPT.encode("utf-8")).hexdigest()
+    assert next(check for check in assembly["checks"] if check["id"] == "ev.chassis.front-crossmember-rail-joints")["state"] == "PASSED"
+    assert next(check for check in assembly["checks"] if check["id"] == "ev.propulsion-frame-interface")["state"] == "UNOBSERVABLE"
     assert all(item["state"] != "MATCH" for item in project["verification"].values())
 
     manifest_response = client.get("/api/v1/vehicle/manifest.json")

@@ -26,6 +26,7 @@ from io import BytesIO
 
 from . import cad, store
 from . import artifacts as artifact_store
+from .assemblies import build_assembly_evidence
 from .domain import Design, EditRequest, InterpretRequest
 from .automotive import (COMPONENT_INFO, VEHICLE_EDITABLE_PARAMETERS, VEHICLE_GENERATOR_VERSION, VehicleDesign, VehicleGenerationRequest, VehicleParameterEditRequest, make_vehicle_design, propagate_vehicle_edits, vehicle_bom, vehicle_manifest, vehicle_verification, vehicle_component_solids, export_vehicle_drawing_pdf, export_vehicle_component_stl, export_vehicle_step, export_vehicle_stl)
 from .engineering import calculation_details, derive, validate
@@ -73,7 +74,7 @@ def response(design: Design | VehicleDesign) -> dict:
     family = get_family(design.family, design.schema_version)
     family.validate_state(design)
     verification = {key: item.model_dump(mode="json") if hasattr(item, "model_dump") else item for key, item in family.verify(design).items()}
-    result = {**design.model_dump(mode="json"), "derived": family.calculate(design), "verification": verification}
+    result = {**design.model_dump(mode="json"), "derived": family.calculate(design), "verification": verification, "assembly_verification": build_assembly_evidence(design)}
     if design.family == "spur_gear_pair":
         component_refs = {"pinion": ["pinion_teeth", "module_mm", "face_width_mm"], "gear": ["gear_teeth", "module_mm", "face_width_mm"], "gear-pair": ["input_torque_Nm", "input_speed_rpm", "gear_ratio"]}
         values = {**design.requirements.model_dump(), "pinion_teeth": design.components[0].teeth, "gear_teeth": design.components[1].teeth}
