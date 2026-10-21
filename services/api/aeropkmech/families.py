@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .domain import Design
 from .engineering import derive
+from .automotive import VEHICLE_EDITABLE_PARAMETERS
 
 
 @dataclass(frozen=True)
@@ -98,14 +99,8 @@ class ElectricVehicleFamily:
     metadata = FamilyMetadata(
         id="electric_vehicle", display_name="Concept electric vehicle packaging assembly",
         category="Automotive systems / EV packaging", schema_version="1.0",
-        parameters=(
-            {"name":"overall_length_mm","unit":"mm","source":"prompt or explicit input"},
-            {"name":"overall_width_mm","unit":"mm","source":"prompt or explicit input"},
-            {"name":"wheelbase_mm","unit":"mm","source":"explicit input or recorded conceptual default"},
-            {"name":"front_track_mm","unit":"mm","source":"explicit input or recorded conceptual default"},
-            {"name":"rear_track_mm","unit":"mm","source":"explicit input or recorded conceptual default"},
-        ),
-        capabilities=("versioned EV packaging parameters","CadQuery frame/wheel/body/propulsion envelopes","assembly STEP and STL","revision-linked component STL","layout drawing PDF","manifest and BOM JSON"),
+        parameters=tuple({"name":name,"unit":item["unit"],"minimum_exclusive":item["min_exclusive"],"maximum":item["max"],"source":"prompt/input or explicit assumed geometry default","editable":True} for name,item in VEHICLE_EDITABLE_PARAMETERS.items()),
+        capabilities=("revision-conditional EV geometry parameter editing","CadQuery frame/wheel/body/propulsion envelopes","assembly STEP and STL","revision-linked component STL","layout drawing PDF","manifest and BOM JSON"),
         limitations=("conceptual envelope geometry only","no range, mass, strength, crash, suspension, thermal, regulatory, or safety analysis","assumed geometry defaults must be reviewed"),
         artifacts=("step","stl","component stl","drawing pdf","manifest json","bom json"),
         exporters=(
@@ -114,7 +109,7 @@ class ElectricVehicleFamily:
             {"type":"pdf","implementation":"automotive.export_vehicle_drawing_pdf"},
             {"type":"json","implementation":"automotive.vehicle_manifest / vehicle_bom"},
         ),
-        verification_checks=("parameter consistency: CALCULATED","component placement: CALCULATED","range: UNRESOLVED","strength and safety: UNSUPPORTED"),
+        verification_checks=("schema constraints: PASSED/FAILED","stable component identity and solid validity: PASSED/FAILED","wheel/axle placement: PASSED/FAILED","frame dimensions and envelope containment: PASSED/FAILED","mechanical fit: PARTIAL (not modeled)","range: UNKNOWN","strength and safety: UNKNOWN/unsupported"),
     )
 
     def default_design(self):
@@ -137,14 +132,8 @@ class ElectricVehicleFamily:
         return vehicle_calculate(design)
 
     def verify(self, design):
-        from .automotive import vehicle_calculate
-        result = vehicle_calculate(design)
-        return {
-            "dimensional_consistency":{"state":"CALCULATED","summary":"Specified and assumed packaging dimensions satisfy the family checks.","evidence":["VehicleParameters cross-field validation passed."]},
-            "wheel_placement":{"state":"CALCULATED","summary":"Four wheel/tire centers and axle references are derived from wheelbase and track.","evidence":[f"Wheelbase {design.requirements.wheelbase_mm.value:g} mm; front/rear track {design.requirements.front_track_mm.value:g}/{design.requirements.rear_track_mm.value:g} mm."]},
-            "target_range":{"state":"UNRESOLVED","summary":"The requested range is a target and was not calculated.","evidence":[]},
-            "strength_safety":{"state":"UNSUPPORTED","summary":"No structural, crash, road-safety, or manufacturing analysis is implemented.","evidence":[]},
-        }
+        from .automotive import vehicle_verification
+        return vehicle_verification(design)
 
     def generate_geometry(self, design):
         from .automotive import build_vehicle_assembly

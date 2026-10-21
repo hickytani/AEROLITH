@@ -259,6 +259,23 @@ test('Studio prompt intake is wired to a reviewable specification and explicit r
   assert.match(style, /\.specification-review\s*\{[^}]*overflow:\s*auto/);
 });
 
+test('EV editing uses the versioned backend contract, current revision and visible regeneration status', async () => {
+  const [markup,script,style] = await Promise.all([
+    readFile(new URL('../public/index.html', import.meta.url), 'utf8'),
+    readFile(new URL('../public/app.js', import.meta.url), 'utf8'),
+    readFile(new URL('../public/style.css', import.meta.url), 'utf8'),
+  ]);
+  for (const id of ['vehicle-editor','vehicle-edit-fields','vehicle-apply','vehicle-edit-revision','vehicle-edit-status']) assert.match(markup,new RegExp(`id="${id}"`));
+  assert.match(script,/request\('\/project\/vehicle',\{method:'PATCH'/);
+  assert.match(script,/expected_revision:previousRevision/);
+  assert.match(script,/error\.status===409/);
+  assert.match(script,/Regenerated and validated/);
+  assert.match(script,/artifacts_stale/);
+  assert.match(script,/project\?\.editable_parameters/);
+  assert.match(script,/project\.verification/);
+  assert.match(style,/\.vehicle-edit-fields/);
+});
+
 test('component assistant is selected-part bound and submits a context question to the local API', async () => {
   const [markup, script, style] = await Promise.all([
     readFile(new URL('../public/index.html', import.meta.url), 'utf8'),

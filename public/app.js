@@ -42,7 +42,10 @@ async function request(path, options) {
     const message = Array.isArray(detail)
       ? detail.map((item) => item.msg || JSON.stringify(item)).join('; ')
       : (typeof detail === 'string' ? detail : data.error || `Request failed (${result.status}).`);
-    throw new Error(message);
+    const error = new Error(message);
+    error.status = result.status;
+    error.data = data;
+    throw error;
   }
   return data;
 }
@@ -315,6 +318,75 @@ const specificationInputs = {
 const gearSpecificationFields = ['pinion_teeth', 'gear_teeth', 'module_mm', 'face_width_mm', 'input_torque_Nm', 'input_speed_rpm'];
 const vehicleSpecificationFields = ['overall_length_mm','overall_width_mm','occupant_capacity','target_range_km','body_height_mm','wheelbase_mm','front_track_mm','rear_track_mm','tire_outer_diameter_mm','tire_width_mm','ground_clearance_mm','frame_rail_width_mm','frame_rail_height_mm','body_width_mm','body_length_mm'];
 
+function renderVehicleEditor() {
+  const panel=required('vehicle-editor');
+  const fields=required('vehicle-edit-fields');
+  fields.replaceChildren();
+  const definitions=project?.editable_parameters || {};
+  for (const [name,definition] of Object.entries(definitions)) {
+    const label=document.createElement('label');
+    label.htmlFor=`ev-edit-${name}`;
+    label.append(textElement('span',`${definition.label} (${definition.unit})`));
+    const input=document.createElement('input');
+    input.id=`ev-edit-${name}`;input.name=name;input.type='number';input.min=String(definition.min_exclusive);input.max=String(definition.max);input.step=String(definition.step);input.value=String(definition.value);input.dataset.original=String(definition.value);
+    input.disabled=applying;
+    label.append(input);
+    const source=textElement('small',`${definition.source} · >${definition.min_exclusive} and ≤${definition.max} ${definition.unit} · updates ${definition.dependencies.join(', ')}`);
+    label.append(source);
+    fields.append(label);
+  }
+  panel.hidden=Object.keys(definitions).length===0;
+  required('vehicle-apply').disabled=applying;
+  required('vehicle-edit-revision').textContent=`CURRENT REVISION ${project.revision}`;
+  required('vehicle-edit-status').textContent='Only geometry parameters supported by the generator are editable here.';
+}
+
+async function applyVehicleEdits() {
+  if (applying || project?.family!=='electric_vehicle') return;
+  const inputs=[...required('vehicle-edit-fields').querySelectorAll('input')];
+  const changes={};
+  for (const input of inputs) {
+    if (input.value===input.dataset.original) continue;
+    const value=Number(input.value);
+    if (!input.value.trim() || !Number.isFinite(value) || value<=input.min || value>input.max) {
+      required('vehicle-edit-status').textContent=`Invalid ${input.name}: enter a finite value above ${input.min} and at or below ${input.max} mm.`;
+      input.focus();return;
+    }
+    changes[input.name]=value;
+  }
+  if (!Object.keys(changes).length) {
+    required('vehicle-edit-status').textContent='Change at least one parameter before regenerating.';return;
+  }
+  applying=true;
+  const previousRevision=project.revision;
+  const button=required('vehicle-apply');button.disabled=true;
+  for (const input of inputs) input.disabled=true;
+  required('vehicle-edit-status').textContent=`Regenerating and validating CAD from revision ${previousRevision}…`;
+  setGeometryStatus('loading',`EV EDIT IN PROGRESS · SHOWING REVISION ${previousRevision}`);
+  try {
+    const result=await request('/project/vehicle',{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({...changes,expected_revision:previousRevision})});
+    if (disposed) return;
+    if (result.revision<=previousRevision) throw new Error('Server did not advance the committed revision.');
+    project=result;fill();build();loadArtifacts(project.revision);
+    const propagated=Object.values(result.edit_result?.propagated_parameters||{}).flat();
+    required('vehicle-edit-status').textContent=`Revision ${result.revision} committed. Regenerated and validated ${result.edit_result.regenerated_components.length} components${propagated.length?`; dependent values: ${propagated.join(', ')}`:''}. ${result.edit_result.artifacts_stale.length} prior artifacts are stale; export again to create current-revision files.`;
+  } catch (error) {
+    if (disposed) return;
+    const conflict=error.status===409;
+    try {
+      const latest=await request('/project');
+      if (disposed) return;
+      project=latest;fill();build();loadArtifacts(project.revision);
+    } catch { /* Keep the last canonical client snapshot if refresh is unavailable. */ }
+    required('vehicle-edit-status').textContent=conflict
+      ? `Revision conflict. The server rejected this edit; current revision ${project.revision} has been reloaded. Review the refreshed values and submit again. ${error.message}`
+      : `Edit rejected; revision ${project.revision} remains active. ${error.message}`;
+  } finally {
+    applying=false;
+    if (!disposed) {button.disabled=false;for (const input of required('vehicle-edit-fields').querySelectorAll('input')) input.disabled=false;}
+  }
+}
+
 function specificationValues() {
   if (activeSpecification?.intent === 'SUPPORTED_ELECTRIC_VEHICLE') {
     const values = {};
@@ -580,6 +652,7 @@ function fill() {
   required('result-rev').textContent = `REVISION ${String(project.revision).padStart(2, '0')}`;
   if (project.family === 'electric_vehicle') {
     const p = requirements;
+    renderVehicleEditor();
     const components = required('components');
     components.replaceChildren(textElement('div','02','railhead'),textElement('b','Generated vehicle components'));
     for (const component of derived.components) {
@@ -606,9 +679,19 @@ function fill() {
       link.hidden = false;
       link.href = link.dataset.artifact==='drawing'?`${api}/vehicle/layout.pdf`:link.dataset.artifact==='manifest'?`${api}/vehicle/manifest.json`:link.dataset.artifact==='bom'?`${api}/vehicle/bom.json`:link.dataset.artifact==='report.pdf'?`${api}/report.pdf`:`${api}/export/${link.dataset.artifact}`;
     }
+    const checks=required('checks');checks.replaceChildren();
+    for (const [name,item] of Object.entries(project.verification||{})) {
+      const row=document.createElement('p');
+      row.append(textElement('span','',`status ${String(item.state).toLowerCase()}`));
+      row.append(textElement('span',`${name.replaceAll('_',' ')} · ${item.summary}`));
+      row.append(textElement('b',item.state));
+      if (item.evidence?.length) row.title=item.evidence.join(' ');
+      checks.append(row);
+    }
     required('assumptions').textContent=project.assumptions.join(' ');
     return;
   }
+  required('vehicle-editor').hidden=true;
   for (const id of ['pinion','gear','module','width','torque','speed','apply']) { const el=byId(id); if (el) {el.hidden=false;if(el.tagName==='INPUT') el.parentElement.hidden=false;} }
   for (const link of document.querySelectorAll('.exports > a[data-artifact]')) link.hidden=['drawing','manifest','bom'].includes(link.dataset.artifact);
   required('intro-title').textContent='Spur gear study';required('family-label').textContent='SPUR GEAR PAIR · SCHEMA 1.0';required('stage-title').textContent='ASSEMBLY VIEW';
@@ -814,6 +897,7 @@ required('component-ask').addEventListener('click', async () => {
   } catch (error) { output.textContent = `Could not answer from the current project: ${error.message}`; }
 });
 required('apply').addEventListener('click', () => { if (!disposed) applyChanges(); });
+required('vehicle-apply').addEventListener('click', () => { if (!disposed) applyVehicleEdits(); });
 required('restore-demo').addEventListener('click', () => { if (!disposed) restoreDemo(); });
 required('reset').addEventListener('click', () => fitView());
 for (const button of document.querySelectorAll('[data-view]')) button.addEventListener('click', () => fitView(button.dataset.view));

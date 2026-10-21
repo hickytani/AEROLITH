@@ -95,7 +95,7 @@ def test_vehicle_shared_project_revision_artifacts_and_conflicts(tmp_path,monkey
     assert client.get("/api/v1/project").json()["id"]==project["id"]
     mesh=client.get(f"/api/v1/geometry/tire-front-left.stl?revision={project['revision']}")
     assert mesh.status_code==200 and mesh.headers["x-geometry-component-id"]=="tire-front-left"
-    assert mesh.headers["x-generator-version"]=="cq-ev-envelope-0.1"
+    assert mesh.headers["x-generator-version"]=="cq-ev-envelope-0.2"
     for path,signature in (("/api/v1/export/step",b"ISO-10303-21;"),("/api/v1/export/stl",None),("/api/v1/vehicle/layout.pdf",b"%PDF"),("/api/v1/vehicle/manifest.json",b"{"),("/api/v1/vehicle/bom.json",b"{")):
         artifact=client.get(path)
         assert artifact.status_code==200, (path,artifact.text[:300])

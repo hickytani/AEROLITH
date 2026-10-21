@@ -6,6 +6,7 @@ import hashlib
 import json
 import uuid
 import re
+import math
 from threading import RLock
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet
@@ -26,7 +27,7 @@ from io import BytesIO
 from . import cad, store
 from . import artifacts as artifact_store
 from .domain import Design, EditRequest, InterpretRequest
-from .automotive import VehicleDesign, VehicleGenerationRequest, make_vehicle_design, vehicle_bom, vehicle_manifest, export_vehicle_drawing_pdf, export_vehicle_component_stl, export_vehicle_step, export_vehicle_stl
+from .automotive import (COMPONENT_INFO, VEHICLE_EDITABLE_PARAMETERS, VEHICLE_GENERATOR_VERSION, VehicleDesign, VehicleGenerationRequest, VehicleParameterEditRequest, make_vehicle_design, propagate_vehicle_edits, vehicle_bom, vehicle_manifest, vehicle_verification, vehicle_component_solids, export_vehicle_drawing_pdf, export_vehicle_component_stl, export_vehicle_step, export_vehicle_stl)
 from .engineering import calculation_details, derive, validate
 from .drawings import GEAR_DRAWING_VERSION, gear_pair_reference_pdf
 from .families import (
@@ -75,7 +76,8 @@ def response(design: Design | VehicleDesign) -> dict:
     result = {**design.model_dump(mode="json"), "derived": family.calculate(design), "verification": verification}
     if design.family == "spur_gear_pair":
         return {**result, "calculations": calculation_details(design), "validation": validate(design)}
-    return {**result, "calculations":{"provenance":{"method_version":"ev-envelope-0.1","design_revision":design.revision},"results":[]}, "validation":{"state":"PARTIAL","issues":["Conceptual packaging geometry only; range and safety remain unresolved."]}}
+    result["editable_parameters"]={name:{**metadata,"value":getattr(design.requirements,name).value,"source":getattr(design.requirements,name).source,"evidence":getattr(design.requirements,name).evidence} for name,metadata in VEHICLE_EDITABLE_PARAMETERS.items()}
+    return {**result, "calculations":{"provenance":{"method_version":VEHICLE_GENERATOR_VERSION,"design_revision":design.revision},"results":[]}, "validation":{"state":"PARTIAL","issues":["Conceptual packaging geometry only; range and safety remain unresolved."]}}
 
 
 @app.exception_handler(store.ProjectStateError)
@@ -517,6 +519,51 @@ def generate_vehicle_project(request: VehicleGenerationRequest):
     return response(candidate)
 
 
+@app.patch("/api/v1/project/vehicle")
+def edit_vehicle_project(edit: VehicleParameterEditRequest):
+    """Regenerate and validate an allowlisted EV geometry edit before revision commit."""
+    current=store.load()
+    if current.family!="electric_vehicle":
+        raise HTTPException(status_code=422,detail="EV parameter edits require the electric_vehicle family.")
+    if edit.expected_revision!=current.revision:
+        raise HTTPException(status_code=409,detail=f"Project revision advanced from {edit.expected_revision} to {current.revision}. Reload and review before editing.",headers={"X-Design-Revision":str(current.revision)})
+    changes=edit.model_dump(exclude={"expected_revision"},exclude_none=True)
+    try:
+        candidate,propagated=propagate_vehicle_edits(current,changes)
+        family=IMPLEMENTED_FAMILIES["electric_vehicle"]
+        family.validate_state(candidate)
+        solids=vehicle_component_solids(candidate)
+        expected_ids=set(COMPONENT_INFO)
+        if set(solids)!=expected_ids or len(solids)!=len(expected_ids):
+            raise ValueError("Regenerated CAD component identities do not match the EV assembly contract.")
+        if any(not solid.val().isValid() or not math.isfinite(solid.val().Volume()) or solid.val().Volume()<=0 for solid in solids.values()):
+            raise ValueError("Regenerated CAD contains an invalid or zero-volume solid.")
+        checks=vehicle_verification(candidate)
+        required_checks=("schema_validation","component_geometry","wheel_axle_placement","frame_dimensions","overall_envelope_containment")
+        failed=[name for name in required_checks if checks[name].state.value!="PASSED"]
+        if failed:
+            raise ValueError("Generated candidate failed required checks: "+", ".join(failed))
+    except (ValueError,ValidationError) as exc:
+        raise HTTPException(status_code=422,detail=f"EV edit rejected; canonical revision {current.revision} was preserved. {exc}") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500,detail="EV geometry regeneration failed; canonical project was not changed.",headers={"X-Verification-State":"EXECUTION_ERROR"}) from exc
+    previous_artifacts=artifact_store.list_artifacts(ARTIFACTS,current)
+    try:
+        store.save_if_revision(candidate,current.revision)
+    except store.ProjectRevisionConflict as exc:
+        raise HTTPException(status_code=409,detail=str(exc),headers={"X-Design-Revision":str(exc.current_revision)}) from exc
+    result=response(candidate)
+    result["edit_result"]={
+        "changed_parameters":list(changes),
+        "propagated_parameters":propagated,
+        "regenerated_components":sorted(solids),
+        "artifacts_regenerated":[],
+        "artifacts_stale":[item["artifact_id"] for item in previous_artifacts],
+        "artifact_note":"CAD solids were regenerated and validated before commit. Export files are generated on request; this edit did not publish artifact files.",
+    }
+    return result
+
+
 @app.get("/api/v1/export/stl")
 def export_stl():
     design = store.load()
@@ -525,7 +572,7 @@ def export_stl():
     try:
         if design.family == "electric_vehicle":
             export_vehicle_stl(design, temporary)
-            generator_version = "cq-ev-envelope-0.1"
+            generator_version = VEHICLE_GENERATOR_VERSION
         else:
             cad.export_stl(design, temporary)
             generator_version = cad.GENERATOR_VERSION
@@ -548,7 +595,7 @@ def export_step():
     try:
         if design.family == "electric_vehicle":
             export_vehicle_step(design, temporary)
-            generator_version = "cq-ev-envelope-0.1"
+            generator_version = VEHICLE_GENERATOR_VERSION
         else:
             cad.export_step(design, temporary)
             generator_version = cad.GENERATOR_VERSION
@@ -590,7 +637,7 @@ def component_geometry(component_id: str, revision: int | None = Query(default=N
                 detail=f"Design changed from revision {design.revision} to {latest.revision} while geometry was generated.",
                 headers={"X-Design-Revision": str(latest.revision)},
             )
-        generator_version = "cq-ev-envelope-0.1" if design.family == "electric_vehicle" else cad.GENERATOR_VERSION
+        generator_version = VEHICLE_GENERATOR_VERSION if design.family == "electric_vehicle" else cad.GENERATOR_VERSION
         path, metadata = artifact_store.publish(temporary.read_bytes(), ARTIFACTS, design, component_id, "stl", generator_version)
     except HTTPException:
         raise
@@ -616,7 +663,7 @@ def component_geometry(component_id: str, revision: int | None = Query(default=N
 def publish_vehicle_json_artifact(design: VehicleDesign, kind: str, payload: dict):
     require_current_revision(design)
     data = json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8")
-    path, metadata = artifact_store.publish(data, ARTIFACTS, design, kind, "json", "ev-envelope-0.1")
+    path, metadata = artifact_store.publish(data, ARTIFACTS, design, kind, "json", VEHICLE_GENERATOR_VERSION)
     return FileResponse(path, media_type="application/json", filename=path.name, headers=artifact_headers(metadata, design.revision))
 
 
@@ -643,7 +690,7 @@ def vehicle_layout_export():
     try:
         export_vehicle_drawing_pdf(design, temporary)
         require_current_revision(design)
-        path, metadata = artifact_store.publish(temporary.read_bytes(), ARTIFACTS, design, "layout-drawing", "pdf", "ev-envelope-0.1")
+        path, metadata = artifact_store.publish(temporary.read_bytes(), ARTIFACTS, design, "layout-drawing", "pdf", VEHICLE_GENERATOR_VERSION)
     except HTTPException:
         raise
     except Exception as exc:
@@ -674,7 +721,7 @@ def report():
     design = store.load()
     if design.family == "electric_vehicle":
         document = f"<!doctype html><meta charset='utf-8'><title>EV conceptual geometry R{design.revision}</title><h1>Concept EV packaging note</h1><p>Revision {design.revision} · {design.id} · conceptual only</p><h2>Parameters and provenance</h2><pre>{html.escape(design.requirements.model_dump_json(indent=2))}</pre><h2>Assembly manifest</h2><pre>{html.escape(json.dumps(vehicle_manifest(design),indent=2))}</pre><h2>Limits</h2><p>Range target is not calculated. No mass, structural, crash, thermal, regulatory, safety, or manufacturing verification is provided.</p>"
-        path, metadata = artifact_store.publish(document.encode("utf-8"), ARTIFACTS, design, "report", "html", "ev-envelope-0.1")
+        path, metadata = artifact_store.publish(document.encode("utf-8"), ARTIFACTS, design, "report", "html", VEHICLE_GENERATOR_VERSION)
         return FileResponse(path,media_type="text/html",headers=artifact_headers(metadata,design.revision))
     derived = derive(design)
     rows = "".join(f"<tr><td>{key}</td><td>{value:.3f}</td></tr>" for key, value in derived.items() if isinstance(value, (int, float)))
@@ -707,7 +754,7 @@ def report_pdf():
         styles=getSampleStyleSheet()
         p=design.requirements
         doc.build([Paragraph("Concept EV packaging note",styles["Title"]),Paragraph(f"Revision {design.revision} · all dimensions mm · conceptual CAD envelopes only",styles["Normal"]),Spacer(1,12),Paragraph("Specified requirements",styles["Heading2"]),Paragraph(html.escape(p.model_dump_json(indent=2)),styles["Code"]),Spacer(1,12),Paragraph("Limits",styles["Heading2"]),Paragraph("The range value is a target, not a calculation. No mass, structural, crash, thermal, regulatory, safety, or manufacturing verification is provided.",styles["BodyText"]),Paragraph("Assumptions",styles["Heading2"]),*[Paragraph(html.escape(item),styles["BodyText"]) for item in design.assumptions]])
-        path,metadata=artifact_store.publish(output.getvalue(),ARTIFACTS,design,"report","pdf","ev-envelope-0.1")
+        path,metadata=artifact_store.publish(output.getvalue(),ARTIFACTS,design,"report","pdf",VEHICLE_GENERATOR_VERSION)
         return FileResponse(path,media_type="application/pdf",filename=path.name,headers=artifact_headers(metadata,design.revision))
     derived = derive(design)
     output = BytesIO()

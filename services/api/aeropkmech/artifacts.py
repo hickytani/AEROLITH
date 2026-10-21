@@ -93,9 +93,11 @@ def _dependencies(design: Design, kind: str) -> list[dict[str, str | int]]:
     family = getattr(design, "family", "unknown")
     if family == "electric_vehicle":
         if kind in {"assembly", "layout-drawing", "manifest", "bom", "report"}:
-            keys = ["vehicle_specification", "component_geometry", "coordinate_frames"]
+            from .automotive import VEHICLE_EDITABLE_PARAMETERS
+            keys = [*(f"vehicle_parameter:{name}" for name in VEHICLE_EDITABLE_PARAMETERS), "component_geometry", "coordinate_frames"]
         else:
-            keys = [f"vehicle_specification:{kind}", f"component_geometry:{kind}", "coordinate_frames"]
+            from .automotive import VEHICLE_COMPONENT_PARAMETER_DEPENDENCIES
+            keys = [*(f"vehicle_parameter:{name}" for name in VEHICLE_COMPONENT_PARAMETER_DEPENDENCIES.get(kind, ())), f"component_geometry:{kind}", "coordinate_frames"]
     elif kind in {"assembly", "report", "gear-reference-drawing"}:
         keys = ["spur_gear_pair:requirements", "assembly_geometry", "engineering_calculations"]
     else:

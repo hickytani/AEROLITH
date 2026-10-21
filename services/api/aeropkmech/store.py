@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from threading import RLock
 from uuid import uuid4
 
 from pydantic import ValidationError
@@ -12,6 +13,7 @@ from .domain import Component, Design, Requirements
 ROOT = Path(__file__).resolve().parents[3]
 DATA_DIR = Path(os.environ.get("AEROPKMECH_DATA_DIR", ROOT / "data"))
 STATE_FILE = DATA_DIR / "project.json"
+PROJECT_WRITE_LOCK = RLock()
 
 
 class ProjectStateError(RuntimeError):
@@ -20,6 +22,13 @@ class ProjectStateError(RuntimeError):
 
 class ProjectPersistenceError(RuntimeError):
     """A valid project could not be committed to local storage."""
+
+
+class ProjectRevisionConflict(RuntimeError):
+    def __init__(self, expected_revision: int, current_revision: int):
+        self.expected_revision=expected_revision
+        self.current_revision=current_revision
+        super().__init__(f"Project revision advanced from {expected_revision} to {current_revision} during candidate generation.")
 
 
 def default_design() -> Design:
@@ -65,6 +74,20 @@ def load() -> Design:
 
 
 def save(design: Design) -> None:
+    with PROJECT_WRITE_LOCK:
+        _save_locked(design)
+
+
+def save_if_revision(design: Design, expected_revision: int) -> None:
+    """Process-local compare-and-swap for a fully validated, regenerated candidate."""
+    with PROJECT_WRITE_LOCK:
+        current=load()
+        if current.revision!=expected_revision:
+            raise ProjectRevisionConflict(expected_revision,current.revision)
+        _save_locked(design)
+
+
+def _save_locked(design: Design) -> None:
     try:
         if design.family == "electric_vehicle":
             from .automotive import VehicleDesign

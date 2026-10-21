@@ -17,7 +17,7 @@ The app writes its one active project to `data/project.json` and generated CAD/r
 
 ## Demonstration
 
-Submit a supported gear prompt or the two-seat EV prompt. Review source-tagged inputs and assumed packaging defaults before committing. The EV creates separate frame, wheel/tire, body and propulsion packaging solids in CadQuery, with a shared project revision. Generate STEP/STL, layout PDF, manifest and BOM from the artifact panel. The EV is conceptual packaging geometry: the 300 km value remains a target; mass, range calculation, strength, crashworthiness, safety, thermal design and production suitability are unsupported. Gear inputs keep their existing edit flow. Learn progress is browser-local. Optional local Ollama integration can propose uncommitted extraction results and answer selected-component questions using project context; deterministic calculations and CAD stay authoritative.
+Submit a supported gear prompt or the two-seat EV prompt. Review source-tagged inputs and assumed packaging defaults before committing. The EV creates separate frame, wheel/tire, body and propulsion packaging solids in CadQuery, with a shared project revision. Its Studio parameter panel edits 13 supported geometry dimensions against the current revision, regenerates and verifies candidate solids, then commits or displays validation/conflict errors. Generate STEP/STL, layout PDF, manifest and BOM from the artifact panel. The EV is conceptual packaging geometry: the 300 km value remains a target; mass, range calculation, strength, crashworthiness, safety, thermal design and production suitability are unsupported. Gear inputs keep their existing edit flow. Learn progress is browser-local. Optional local Ollama integration can propose uncommitted extraction results and answer selected-component questions using project context; deterministic calculations and CAD stay authoritative.
 
 ## Current API
 
@@ -28,6 +28,7 @@ Submit a supported gear prompt or the two-seat EV prompt. Review source-tagged i
 - `POST /api/v1/project/interpret` returns a deterministic typed proposal by default; opt-in local model proposals pass the same schema and remain uncommitted
 - `POST /api/v1/specifications/propose` returns a versioned reviewable spur-gear or EV packaging specification
 - `POST /api/v1/project/vehicle/generate` commits reviewed EV parameters with an optimistic revision guard
+- `PATCH /api/v1/project/vehicle` regenerates and verifies supported EV geometry parameters before a revision-conditional commit
 - `GET /api/v1/vehicle/layout.pdf`, `/api/v1/vehicle/manifest.json`, `/api/v1/vehicle/bom.json` generates revision-linked vehicle artifacts
 - `POST /api/v1/learn/spur-gear/experiment` calculates uncommitted lesson inputs with the same engineering core
 - `GET /api/v1/export/stl`

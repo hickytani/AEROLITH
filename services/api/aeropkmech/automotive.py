@@ -19,6 +19,7 @@ import cadquery as cq
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 VEHICLE_CAD_LOCK = RLock()
+VEHICLE_GENERATOR_VERSION = "cq-ev-envelope-0.2"
 
 
 class SourcedValue(BaseModel):
@@ -58,6 +59,8 @@ class VehicleParameters(BaseModel):
         p = self
         if p.wheelbase_mm.value >= p.overall_length_mm.value:
             raise ValueError("wheelbase must be shorter than overall length")
+        if p.wheelbase_mm.value + p.tire_outer_diameter_mm.value > p.overall_length_mm.value:
+            raise ValueError("wheelbase plus tire diameter must fit within the overall length envelope")
         if p.front_track_mm.value >= p.overall_width_mm.value or p.rear_track_mm.value >= p.overall_width_mm.value:
             raise ValueError("track widths must fit inside overall width")
         if p.tire_outer_diameter_mm.value >= p.body_height_mm.value:
@@ -107,6 +110,70 @@ class VehicleGenerationRequest(BaseModel):
     propulsion_layout: Literal["rear_motor_rear_drive"] = "rear_motor_rear_drive"
     provenance: dict[str, Literal["USER_PROVIDED", "ASSUMED"]] = Field(default_factory=dict)
     evidence: dict[str, str] = Field(default_factory=dict)
+
+
+class VehicleParameterEditRequest(BaseModel):
+    """Allowlisted geometry parameters for an optimistic EV revision edit."""
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    expected_revision: int = Field(ge=1)
+    overall_length_mm: float | None = Field(default=None, gt=1500, le=12000)
+    overall_width_mm: float | None = Field(default=None, gt=800, le=4000)
+    body_height_mm: float | None = Field(default=None, gt=800, le=3000)
+    wheelbase_mm: float | None = Field(default=None, gt=1000, le=8000)
+    front_track_mm: float | None = Field(default=None, gt=800, le=3000)
+    rear_track_mm: float | None = Field(default=None, gt=800, le=3000)
+    tire_outer_diameter_mm: float | None = Field(default=None, gt=300, le=1500)
+    tire_width_mm: float | None = Field(default=None, gt=100, le=600)
+    ground_clearance_mm: float | None = Field(default=None, gt=50, le=500)
+    frame_rail_width_mm: float | None = Field(default=None, gt=20, le=300)
+    frame_rail_height_mm: float | None = Field(default=None, gt=20, le=400)
+    body_width_mm: float | None = Field(default=None, gt=800, le=4000)
+    body_length_mm: float | None = Field(default=None, gt=1000, le=12000)
+
+    @model_validator(mode="after")
+    def at_least_one_geometry_edit(self):
+        if not any(getattr(self, name) is not None for name in type(self).model_fields if name != "expected_revision"):
+            raise ValueError("Provide at least one supported geometry parameter.")
+        return self
+
+
+VEHICLE_EDITABLE_PARAMETERS = {
+    "overall_length_mm": {"label": "Overall length", "unit": "mm", "min_exclusive": 1500, "max": 12000, "step": 10, "dependencies": ["body-envelope", "frame-rail-left", "frame-rail-right", "front-crossmember", "rear-crossmember", "front/rear wheels when assumed wheelbase propagates"]},
+    "overall_width_mm": {"label": "Overall width", "unit": "mm", "min_exclusive": 800, "max": 4000, "step": 10, "dependencies": ["front/rear wheels when assumed tracks propagate", "body-envelope when assumed body width propagates"]},
+    "body_height_mm": {"label": "Body envelope height", "unit": "mm", "min_exclusive": 800, "max": 3000, "step": 10, "dependencies": ["body-envelope"]},
+    "wheelbase_mm": {"label": "Wheelbase", "unit": "mm", "min_exclusive": 1000, "max": 8000, "step": 10, "dependencies": ["front/rear axles", "wheel/rim/hub/link groups", "frame members", "battery/motor/inverter/reduction envelopes"]},
+    "front_track_mm": {"label": "Front track", "unit": "mm", "min_exclusive": 800, "max": 3000, "step": 10, "dependencies": ["front axle and wheel/rim/hub/link group"]},
+    "rear_track_mm": {"label": "Rear track", "unit": "mm", "min_exclusive": 800, "max": 3000, "step": 10, "dependencies": ["rear axle and wheel/rim/hub/link group", "frame width", "battery envelope"]},
+    "tire_outer_diameter_mm": {"label": "Tire outer diameter", "unit": "mm", "min_exclusive": 300, "max": 1500, "step": 5, "dependencies": ["all tire/rim groups", "wheel centers", "motor/reduction placement"]},
+    "tire_width_mm": {"label": "Tire width", "unit": "mm", "min_exclusive": 100, "max": 600, "step": 5, "dependencies": ["all tire/rim groups"]},
+    "ground_clearance_mm": {"label": "Ground clearance", "unit": "mm", "min_exclusive": 50, "max": 500, "step": 5, "dependencies": ["frame height", "body envelope", "suspension links", "battery/inverter placement"]},
+    "frame_rail_width_mm": {"label": "Frame rail width", "unit": "mm", "min_exclusive": 20, "max": 300, "step": 5, "dependencies": ["frame rails and crossmembers"]},
+    "frame_rail_height_mm": {"label": "Frame rail height", "unit": "mm", "min_exclusive": 20, "max": 400, "step": 5, "dependencies": ["frame rails", "crossmembers", "suspension and propulsion package placement"]},
+    "body_width_mm": {"label": "Body envelope width", "unit": "mm", "min_exclusive": 800, "max": 4000, "step": 10, "dependencies": ["body-envelope"]},
+    "body_length_mm": {"label": "Body envelope length", "unit": "mm", "min_exclusive": 1000, "max": 12000, "step": 10, "dependencies": ["body-envelope"]},
+}
+
+VEHICLE_COMPONENT_PARAMETER_DEPENDENCIES = {
+    "frame-rail-left": ("overall_length_mm","overall_width_mm","wheelbase_mm","rear_track_mm","ground_clearance_mm","frame_rail_width_mm","frame_rail_height_mm"),
+    "frame-rail-right": ("overall_length_mm","overall_width_mm","wheelbase_mm","rear_track_mm","ground_clearance_mm","frame_rail_width_mm","frame_rail_height_mm"),
+    "front-crossmember": ("overall_length_mm","overall_width_mm","wheelbase_mm","rear_track_mm","ground_clearance_mm","frame_rail_width_mm","frame_rail_height_mm"),
+    "rear-crossmember": ("overall_length_mm","overall_width_mm","wheelbase_mm","rear_track_mm","ground_clearance_mm","frame_rail_width_mm","frame_rail_height_mm"),
+    "front-axle-reference": ("overall_length_mm","overall_width_mm","wheelbase_mm","front_track_mm","tire_outer_diameter_mm"),
+    "rear-axle-reference": ("overall_length_mm","overall_width_mm","wheelbase_mm","rear_track_mm","tire_outer_diameter_mm"),
+    "body-envelope": ("overall_length_mm","overall_width_mm","body_height_mm","ground_clearance_mm","body_width_mm","body_length_mm"),
+    "battery-pack-envelope": ("wheelbase_mm","rear_track_mm","ground_clearance_mm","frame_rail_height_mm"),
+    "traction-motor-envelope": ("wheelbase_mm","tire_outer_diameter_mm"),
+    "inverter-envelope": ("wheelbase_mm","ground_clearance_mm","frame_rail_height_mm"),
+    "reduction-drive-envelope": ("wheelbase_mm","tire_outer_diameter_mm"),
+}
+for _axle in ("front","rear"):
+    _track=f"{_axle}_track_mm"
+    for _side in ("left","right"):
+        _wheel=f"{_axle}-{_side}"
+        VEHICLE_COMPONENT_PARAMETER_DEPENDENCIES[f"tire-{_wheel}"]=("overall_length_mm","overall_width_mm","wheelbase_mm",_track,"tire_outer_diameter_mm","tire_width_mm")
+        VEHICLE_COMPONENT_PARAMETER_DEPENDENCIES[f"rim-{_wheel}"]=("overall_length_mm","overall_width_mm","wheelbase_mm",_track,"tire_outer_diameter_mm","tire_width_mm")
+        VEHICLE_COMPONENT_PARAMETER_DEPENDENCIES[f"hub-{_wheel}"]=("wheelbase_mm",_track,"tire_outer_diameter_mm")
+        VEHICLE_COMPONENT_PARAMETER_DEPENDENCIES[f"suspension-link-{_wheel}"]=("wheelbase_mm",_track,"tire_outer_diameter_mm","ground_clearance_mm","frame_rail_height_mm")
 
 
 class VehiclePromptParameter(BaseModel):
@@ -378,9 +445,9 @@ def vehicle_manifest(design: VehicleDesign) -> dict:
         elif component_id in {"battery-pack-envelope", "traction-motor-envelope", "inverter-envelope", "reduction-drive-envelope"}:
             subsystem = "propulsion"
             component_interfaces = ["frame-rail-left","frame-rail-right"]
-        items.append({"id": component_id, "name": name, "family": family, "role": role, "parent_id": subsystem, "quantity": 1, "dimensions": dimensions, "center_mm": center, "transform": {"translation_mm":center,"rotation_euler_deg":{"x":0,"y":0,"z":0}}, "coordinate_system": "vehicle: X forward, Y left, Z up; mm", "interfaces": component_interfaces, "geometry_artifact_reference": f"/api/v1/geometry/{component_id}.stl?revision={design.revision}", "generator_version": "cq-ev-envelope-0.1", "status": "CALCULATED", "description": f"{role}. Conceptual CAD envelope, not a detailed or validated part."})
+        items.append({"id": component_id, "name": name, "family": family, "role": role, "parent_id": subsystem, "quantity": 1, "dimensions": dimensions, "center_mm": center, "transform": {"translation_mm":center,"rotation_euler_deg":{"x":0,"y":0,"z":0}}, "coordinate_system": "vehicle: X forward, Y left, Z up; mm", "interfaces": component_interfaces, "geometry_artifact_reference": f"/api/v1/geometry/{component_id}.stl?revision={design.revision}", "generator_version": VEHICLE_GENERATOR_VERSION, "status": "CALCULATED", "description": f"{role}. Conceptual CAD envelope, not a detailed or validated part."})
     subsystems = sorted({item["parent_id"] for item in items})
-    return {"schema_version":"1.0", "design_id":design.id, "family":design.family, "revision":design.revision, "generator_version":"cq-ev-envelope-0.1", "units":"mm", "coordinate_system":"X forward, Y left, Z up; ground Z=0", "assembly":{"id":"vehicle-assembly","component_ids":[item["id"] for item in items]}, "hierarchy":[{"id":name,"parent_id":"vehicle-assembly","kind":"subsystem"} for name in subsystems], "relationships":[{"source":item["id"],"target":interface,"type":"mounting-or-packaging-reference"} for item in items for interface in item["interfaces"]], "components":items, "assumptions":design.assumptions, "unresolved":["Materials, mass, strength, crashworthiness, range/power sizing, suspension kinematics, thermal design, and regulatory compliance are not determined."], "design_status":"CONCEPTUAL_GEOMETRY"}
+    return {"schema_version":"1.0", "design_id":design.id, "family":design.family, "revision":design.revision, "generator_version":VEHICLE_GENERATOR_VERSION, "units":"mm", "coordinate_system":"X forward, Y left, Z up; ground Z=0", "assembly":{"id":"vehicle-assembly","component_ids":[item["id"] for item in items]}, "hierarchy":[{"id":name,"parent_id":"vehicle-assembly","kind":"subsystem"} for name in subsystems], "relationships":[{"source":item["id"],"target":interface,"type":"mounting-or-packaging-reference"} for item in items for interface in item["interfaces"]], "components":items, "assumptions":design.assumptions, "unresolved":["Materials, mass, strength, crashworthiness, range/power sizing, suspension kinematics, thermal design, and regulatory compliance are not determined."], "design_status":"CONCEPTUAL_GEOMETRY"}
 
 
 def vehicle_calculate(design: VehicleDesign) -> dict:
@@ -398,14 +465,167 @@ def vehicle_calculate(design: VehicleDesign) -> dict:
     solids=vehicle_component_solids(design)
     bounds=[solid.val().BoundingBox() for solid in solids.values()]
     actual={"length":max(b.xmax for b in bounds)-min(b.xmin for b in bounds),"width":max(b.ymax for b in bounds)-min(b.ymin for b in bounds),"height":max(b.zmax for b in bounds)-min(b.zmin for b in bounds)}
+    expected_ids=set(COMPONENT_INFO)
+    geometry_validity=all(solid.val().isValid() and solid.val().Volume()>0 for solid in solids.values())
+    identities_valid=set(solids)==expected_ids and len(solids)==len(expected_ids)
+    within_envelope=(actual["length"]<=l+0.1 and actual["width"]<=w+0.1 and actual["height"]<=p.body_height_mm.value+0.1)
+    placements_valid=True
+    placement_evidence=[]
+    manifest_by_id={item["id"]:item for item in manifest["components"]}
+    for wheel in wheel_centers:
+        component_id=f"tire-{wheel['id']}"
+        center=manifest_by_id[component_id]["center_mm"]
+        expected=(wheel["x_mm"],wheel["y_mm"],wheel["z_mm"])
+        actual_center=(center["x_mm"],center["y_mm"],center["z_mm"])
+        valid=all(math.isclose(a,e,abs_tol=0.05) for a,e in zip(actual_center,expected))
+        placements_valid &= valid
+        placement_evidence.append(f"{component_id}: expected center {expected} mm; CAD bounding-box center {actual_center} mm; {'matched' if valid else 'mismatch'}.")
     return {
         "overall_length_mm":l,"overall_width_mm":w,"target_range_km":{"value":p.target_range_km.value,"status":"UNRESOLVED","meaning":"User target, not a calculated range"},
         "wheelbase_mm":p.wheelbase_mm.value,"front_track_mm":p.front_track_mm.value,"rear_track_mm":p.rear_track_mm.value,
         "wheel_centers":wheel_centers,"component_count":len(manifest["components"]),"components":[{**item,"outer_diameter_mm": max(item["dimensions"].values())} for item in manifest["components"]],
         "geometry_bounds_mm":actual,
-        "calculation_status":{"dimensional_consistency":"CALCULATED" if math.isclose(actual["length"],l,abs_tol=0.1) and math.isclose(actual["width"],w,abs_tol=0.1) and math.isclose(actual["height"],p.body_height_mm.value,abs_tol=0.1) else "FAILED","wheel_positions":"CALCULATED","range":"UNRESOLVED","mass":"UNRESOLVED","strength":"UNSUPPORTED","safety":"UNSUPPORTED"},
+        "geometry_integrity":{"valid_solids":geometry_validity,"stable_component_identities":identities_valid,"expected_component_count":len(expected_ids),"generated_component_count":len(solids)},
+        "calculation_status":{"dimensional_consistency":"CALCULATED" if within_envelope else "FAILED","wheel_positions":"CALCULATED" if placements_valid else "FAILED","component_geometry":"CALCULATED" if geometry_validity and identities_valid else "FAILED","range":"UNRESOLVED","mass":"UNRESOLVED","strength":"UNSUPPORTED","safety":"UNSUPPORTED"},
         "clearance_check":{"status":"CALCULATED","ground_clearance_mm":p.ground_clearance_mm.value,"tire_radius_mm":tire_r,"wheel_centers_above_ground":all(item["z_mm"]>0 for item in wheel_centers)},
     }
+
+
+def vehicle_verification(design: VehicleDesign) -> dict:
+    """Evidence for generated envelope relationships; not mechanical-fit/safety proof."""
+    from .verification import VerificationItem, VerificationState
+
+    result=vehicle_calculate(design)
+    p=design.requirements
+    components=result["components"]
+    by_id={item["id"]:item for item in components}
+    expected_ids=set(COMPONENT_INFO)
+    actual_ids=set(by_id)
+    bounds=result["geometry_bounds_mm"]
+    within=(bounds["length"]<=p.overall_length_mm.value+0.1 and bounds["width"]<=p.overall_width_mm.value+0.1 and bounds["height"]<=p.body_height_mm.value+0.1)
+    wheel_evidence=[]
+    wheel_ok=True
+    for center in result["wheel_centers"]:
+        cid=f"tire-{center['id']}"
+        mesh_center=by_id[cid]["center_mm"]
+        expected_center=(center["x_mm"],center["y_mm"],center["z_mm"])
+        actual_center=(mesh_center["x_mm"],mesh_center["y_mm"],mesh_center["z_mm"])
+        matched=all(math.isclose(a,e,abs_tol=0.05) for a,e in zip(actual_center,expected_center))
+        wheel_ok &= matched
+        wheel_evidence.append(f"{cid}: expected CAD center {expected_center} mm; measured {actual_center} mm; {'matched' if matched else 'mismatch'}.")
+    axle_ok=True
+    for axle in ("front","rear"):
+        bbox=vehicle_component_solids(design)[f"{axle}-axle-reference"].val().BoundingBox()
+        measured=((bbox.xmin+bbox.xmax)/2,(bbox.ymin+bbox.ymax)/2,(bbox.zmin+bbox.zmax)/2)
+        expected_center=(p.wheelbase_mm.value/2 if axle=="front" else -p.wheelbase_mm.value/2,0,p.tire_outer_diameter_mm.value/2)
+        matched=all(math.isclose(a,e,abs_tol=0.05) for a,e in zip(measured,expected_center))
+        axle_ok &= matched
+        wheel_evidence.append(f"{axle}-axle-reference: expected center {expected_center} mm; measured {measured} mm; {'matched' if matched else 'mismatch'}.")
+    expected_frame_length=round(p.wheelbase_mm.value*0.92,4)
+    frame_dims_ok=all(math.isclose(by_id[cid]["dimensions"]["length_mm"],expected_frame_length,abs_tol=0.05) and math.isclose(by_id[cid]["dimensions"]["width_mm"],p.frame_rail_width_mm.value,abs_tol=0.05) and math.isclose(by_id[cid]["dimensions"]["height_mm"],p.frame_rail_height_mm.value,abs_tol=0.05) for cid in ("frame-rail-left","frame-rail-right"))
+    integrity=result["geometry_integrity"]
+    geometry_ok=actual_ids==expected_ids and integrity["valid_solids"] and integrity["stable_component_identities"] and result["component_count"]==len(expected_ids) and all(item["status"]=="CALCULATED" and all(math.isfinite(v) and v>0 for v in item["dimensions"].values()) for item in components)
+    interface_refs=[(item["id"],target) for item in components for target in item["interfaces"]]
+    missing_refs=[f"{source} -> {target}" for source,target in interface_refs if target not in actual_ids]
+    return {
+        "schema_validation":VerificationItem(state=VerificationState.PASSED,summary="The typed EV parameter schema and cross-field envelope constraints passed.",evidence=["VehicleParameters validation completed before geometry generation."]),
+        "component_geometry":VerificationItem(state=VerificationState.PASSED if geometry_ok else VerificationState.FAILED,summary="All required stable component identities map to finite, positive CAD bounding dimensions.",evidence=[f"Expected {len(expected_ids)} unique component IDs; generated {result['component_count']}.","All generated CadQuery solids are checked for Open CASCADE validity and positive volume."]),
+        "wheel_axle_placement":VerificationItem(state=VerificationState.PASSED if wheel_ok and axle_ok else VerificationState.FAILED,summary="Wheel/tire and axle-reference centers are compared to coordinates derived from wheelbase, tracks and tire diameter.",evidence=wheel_evidence),
+        "frame_dimensions":VerificationItem(state=VerificationState.PASSED if frame_dims_ok else VerificationState.FAILED,summary="Longitudinal rail CAD bounds are compared with wheelbase-scaled length and declared rail cross-section.",evidence=[f"Expected rail length {expected_frame_length:g} mm; expected section {p.frame_rail_width_mm.value:g} x {p.frame_rail_height_mm.value:g} mm.",f"Measured left rail dimensions {by_id['frame-rail-left']['dimensions']}; right rail dimensions {by_id['frame-rail-right']['dimensions']}."]),
+        "overall_envelope_containment":VerificationItem(state=VerificationState.PASSED if within else VerificationState.FAILED,summary="Actual assembly CAD bounds must remain within the declared overall length, width and body-height envelopes.",evidence=[f"CAD bounds {bounds}; declared maximum envelope {p.overall_length_mm.value:g} x {p.overall_width_mm.value:g} x {p.body_height_mm.value:g} mm."]),
+        "mechanical_interfaces":VerificationItem(state=VerificationState.PARTIAL if not missing_refs else VerificationState.FAILED,summary="Manifest interface targets are checked for assembly identity; fit, contact, load transfer and kinematics are not modeled.",evidence=[f"Resolved {len(interface_refs)-len(missing_refs)} of {len(interface_refs)} interface references against stable component IDs.",*(missing_refs or ["Wheel/axle coordinates and package/frame references resolve; physical fit and interference remain untested."])]),
+        "range_sizing":VerificationItem(state=VerificationState.UNKNOWN,summary="Target range is an input target; energy use and battery sizing are not calculated.",evidence=[f"User target {p.target_range_km.value:g} km; no energy or drive-cycle model exists."]),
+        "strength_safety":VerificationItem(state=VerificationState.UNKNOWN,summary="Structural, crash, road-safety, manufacturing, and regulatory performance are unsupported by the implemented models.",evidence=["No relevant analysis or acceptance criteria are implemented."]),
+    }
+
+
+def propagate_vehicle_edits(design: VehicleDesign, changes: dict[str, float]) -> tuple[VehicleDesign, dict[str, list[str]]]:
+    """Apply explicit edits and documented overall-envelope dependencies to a copy."""
+    candidate=design.model_copy(deep=True)
+    propagated: dict[str,list[str]]={}
+    req=candidate.requirements
+    before_length=req.overall_length_mm.value
+    before_width=req.overall_width_mm.value
+    for name,value in changes.items():
+        sourced=getattr(req,name)
+        sourced.value=value
+        sourced.source="USER_PROVIDED"
+        sourced.evidence=f"Edited in Studio against revision {design.revision}."
+
+    if "overall_length_mm" in changes:
+        new_length=changes["overall_length_mm"]
+        if "body_length_mm" in changes and not math.isclose(changes["body_length_mm"],new_length,abs_tol=0.001):
+            raise ValueError("When editing overall_length_mm and body_length_mm together, their values must match; the body envelope defines the generated overall-length box.")
+        if "body_length_mm" not in changes:
+            req.body_length_mm= SourcedValue(value=new_length,unit="mm",source="ASSUMED",evidence="Propagated from overall_length_mm; the body envelope tracks the overall length on an EV dimension edit.")
+            propagated["overall_length_mm"]=["body_length_mm"]
+        if req.wheelbase_mm.source=="ASSUMED":
+            propagated.setdefault("overall_length_mm",[])
+            req.wheelbase_mm.value=round(req.wheelbase_mm.value*new_length/before_length,3)
+            req.wheelbase_mm.evidence="Propagated proportionally from overall_length_mm; wheelbase was an assumed packaging default."
+            propagated["overall_length_mm"].append("wheelbase_mm (assumed value scaled proportionally)")
+    if "overall_width_mm" in changes:
+        new_width=changes["overall_width_mm"]
+        assumed_tracks=[req.front_track_mm.source=="ASSUMED",req.rear_track_mm.source=="ASSUMED"]
+        if any(assumed_tracks):
+            old_max=max(req.front_track_mm.value,req.rear_track_mm.value)
+            target_max=new_width-req.tire_width_mm.value
+            if target_max<=0:
+                raise ValueError("Overall width leaves no space for the tire envelopes.")
+            factor=target_max/old_max
+            for name,is_assumed in (("front_track_mm",assumed_tracks[0]),("rear_track_mm",assumed_tracks[1])):
+                if is_assumed:
+                    getattr(req,name).value=round(getattr(req,name).value*factor,3)
+                    getattr(req,name).evidence="Propagated proportionally from overall_width_mm; track was an assumed packaging default."
+                    propagated.setdefault("overall_width_mm",[]).append(f"{name} (assumed value scaled proportionally)")
+        if req.body_width_mm.source=="ASSUMED":
+            limiting_width=min(req.front_track_mm.value,req.rear_track_mm.value)-req.tire_width_mm.value
+            target_body_width=min(new_width*0.70,limiting_width)
+            if target_body_width<=800:
+                raise ValueError("Overall width cannot preserve the minimum body-envelope width and tire clearance.")
+            req.body_width_mm.value=round(target_body_width,3)
+            req.body_width_mm.evidence="Propagated from overall_width_mm while preserving the tire/body package clearance rule."
+            propagated.setdefault("overall_width_mm",[]).append("body_width_mm (assumed envelope resized to preserve clearance)")
+        elif before_width != new_width and not propagated.get("overall_width_mm") and not any(name in changes for name in ("front_track_mm","rear_track_mm","body_width_mm")):
+            raise ValueError("Overall width has no editable dependent geometry: update body_width_mm or an assumed track value in the same request.")
+    elif "tire_width_mm" in changes:
+        assumed_tracks=[req.front_track_mm.source=="ASSUMED",req.rear_track_mm.source=="ASSUMED"]
+        if any(assumed_tracks):
+            old_max=max(req.front_track_mm.value,req.rear_track_mm.value)
+            target_max=req.overall_width_mm.value-req.tire_width_mm.value
+            if target_max<=0:
+                raise ValueError("Tire width leaves no space within the overall width envelope.")
+            factor=target_max/old_max
+            for name,is_assumed in (("front_track_mm",assumed_tracks[0]),("rear_track_mm",assumed_tracks[1])):
+                if is_assumed:
+                    getattr(req,name).value=round(getattr(req,name).value*factor,3)
+                    getattr(req,name).evidence="Propagated from tire_width_mm; track was an assumed packaging default and was moved to preserve the overall width envelope."
+                    propagated.setdefault("tire_width_mm",[]).append(f"{name} (assumed value scaled to preserve outer width)")
+        limiting_body_width=min(req.front_track_mm.value,req.rear_track_mm.value)-req.tire_width_mm.value
+        if req.body_width_mm.source=="ASSUMED" and req.body_width_mm.value>limiting_body_width:
+            if limiting_body_width<=800:
+                raise ValueError("Tire width leaves insufficient inner clearance for the minimum body envelope width.")
+            req.body_width_mm.value=round(limiting_body_width,3)
+            req.body_width_mm.evidence="Reduced from the assumed value to preserve the body-to-tire envelope clearance rule."
+            propagated.setdefault("tire_width_mm",[]).append("body_width_mm (assumed envelope narrowed to preserve clearance)")
+
+    # Drop outdated assumption statements and regenerate them from the candidate's
+    # current provenance for edited and propagated geometry fields.
+    affected=set(changes)
+    for values in propagated.values():
+        affected.update(name.split(" ")[0] for name in values)
+    candidate.assumptions=[line for line in candidate.assumptions if not any(line.startswith(f"{name}=") for name in affected)]
+    for name in affected:
+        if name not in VehicleParameters.model_fields:
+            continue
+        value=getattr(req,name)
+        if isinstance(value,SourcedValue) and value.source=="ASSUMED":
+            candidate.assumptions.append(f"{name}={value.value:g} {value.unit} is an assumed, propagated conceptual-geometry value.")
+    candidate.revision=design.revision+1
+    candidate.updated_at=datetime.now(timezone.utc).isoformat()
+    candidate.history=[*design.history,{"revision":design.revision,"changed_at":design.updated_at,"design":design.model_dump(mode="json")}]
+    candidate=VehicleDesign.model_validate(candidate.model_dump(mode="json"))
+    return candidate,propagated
 
 
 def export_vehicle_component_stl(design: VehicleDesign, component_id: str, target: Path) -> None:
