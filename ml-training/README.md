@@ -16,8 +16,9 @@ python scripts/evaluate_models.py --base-model <base-runtime-name> --base-revisi
 The runner requires a full immutable Hugging Face commit SHA, validates the
 dataset, then checks for at least 8 GiB total VRAM, 16 GiB total RAM, 8 GiB
 currently available RAM and 30 GiB free disk before loading a base model. It
-records current free VRAM when `nvidia-smi` provides it. These are conservative
-gates, not a peak-memory guarantee. It uses NF4 QLoRA, a frozen base and
+records current free VRAM when `nvidia-smi` provides it. Failed or malformed
+GPU telemetry and disk-capacity read errors block safely before model load.
+These are conservative gates, not a peak-memory guarantee. It uses NF4 QLoRA, a frozen base and
 adapter checkpoints. It writes run metadata but does not evaluate or promote
 an adapter. Evaluation on the unchanged base and candidate, artifact
 checksums, and human approval are separate required steps. Interrupted runs
@@ -31,9 +32,11 @@ total RAM and available RAM are below the configured training gate. The installe
 with CUDA OOM while requesting a 429,173,760-byte buffer. A CPU-only attempt
 with a 512-token context and 32-token output failed with Windows `0xc0000409`
 while allocating a 310,250,496-byte buffer. No response was generated. No
-large model was downloaded and no fine-tuning run was attempted. The Ollama
-API stopped responding after the failed inference attempts and is currently
-unavailable in this environment. Do not bypass the training gate.
+large model was downloaded and no fine-tuning run was attempted. A fresh
+read-only Ollama probe on 2026-10-21 reaches the local service and finds
+`qwen3:0.6b` installed, but reports `MODEL_INSTALLED_NOT_INFERRED`; no new
+inference was attempted. The application model-selection variable is unset.
+Do not bypass the training gate.
 
 The committed fixture set `engineering-v2.0.0` contains eight synthetic,
 hand-authored records across eight task categories. It is only a development

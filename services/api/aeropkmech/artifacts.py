@@ -96,7 +96,7 @@ def _dependencies(design: Design, kind: str) -> list[dict[str, str | int]]:
             keys = ["vehicle_specification", "component_geometry", "coordinate_frames"]
         else:
             keys = [f"vehicle_specification:{kind}", f"component_geometry:{kind}", "coordinate_frames"]
-    elif kind in {"assembly", "report"}:
+    elif kind in {"assembly", "report", "gear-reference-drawing"}:
         keys = ["spur_gear_pair:requirements", "assembly_geometry", "engineering_calculations"]
     else:
         keys = [f"spur_gear_pair:component:{kind}", "gear_pair_geometry"]

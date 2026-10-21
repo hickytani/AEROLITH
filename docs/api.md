@@ -21,6 +21,7 @@ The API is versioned under `/api/v1`; FastAPI's interactive schema is available 
 | GET | `/api/v1/export/step` | Current-revision assembly STEP. |
 | GET | `/api/v1/report` | Current-revision HTML engineering note. |
 | GET | `/api/v1/report.pdf` | Current-revision PDF engineering note. |
+| GET | `/api/v1/gear/layout.pdf` | Revision-bound, dimensioned spur-gear reference layout (not a manufacturing drawing). |
 | GET | `/api/v1/vehicle/layout.pdf` | Revision-bound vector top/side/front EV envelope layout drawing. |
 | GET | `/api/v1/vehicle/manifest.json` | Revision-bound component hierarchy, dimensions, transforms, interfaces and mesh references. |
 | GET | `/api/v1/vehicle/bom.json` | Preliminary BOM from generated geometry; materials, mass and cost remain null. |

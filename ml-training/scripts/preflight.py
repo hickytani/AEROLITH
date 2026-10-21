@@ -56,17 +56,27 @@ def check_hardware() -> dict:
         available_memory_gib = round(available_bytes / (1024**3), 2)
     except (OSError, AttributeError) as exc:
         return {"ready": False, "blockers": [f"System RAM detection failed: {exc}"], "training_started": False}
-    disk_gib = round(shutil.disk_usage(".").free / (1024**3), 2)
+    disk_error = False
+    try:
+        disk_gib = round(shutil.disk_usage(".").free / (1024**3), 2)
+    except OSError:
+        disk_gib = 0
+        disk_error = True
     gpu = {"available": False}
     if shutil.which("nvidia-smi"):
-        result = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total,memory.free,driver_version", "--format=csv,noheader"], capture_output=True, text=True, timeout=10)
-        if result.returncode == 0 and result.stdout.strip():
-            name, vram, free_vram, driver = [part.strip() for part in result.stdout.strip().splitlines()[0].split(",", 3)]
-            gpu = {"available": True, "name": name, "vram_mib": int(vram.split()[0]),
-                   "free_vram_mib_at_check": int(free_vram.split()[0]), "driver": driver}
+        try:
+            result = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total,memory.free,driver_version", "--format=csv,noheader"], capture_output=True, text=True, timeout=10)
+            if result.returncode == 0 and result.stdout.strip():
+                name, vram, free_vram, driver = [part.strip() for part in result.stdout.strip().splitlines()[0].split(",", 3)]
+                gpu = {"available": True, "name": name, "vram_mib": int(vram.split()[0]),
+                       "free_vram_mib_at_check": int(free_vram.split()[0]), "driver": driver}
+            else:
+                gpu["detection_error"] = "nvidia-smi returned no usable GPU data."
+        except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+            gpu["detection_error"] = "nvidia-smi failed, timed out, or returned malformed GPU data."
     blockers = []
     if not gpu["available"]:
-        blockers.append("No supported NVIDIA GPU was detected by nvidia-smi.")
+        blockers.append(gpu.get("detection_error", "No supported NVIDIA GPU was detected by nvidia-smi."))
     elif gpu["vram_mib"] < MIN_VRAM_MIB:
         blockers.append(f"Detected {gpu['vram_mib']} MiB VRAM; this experiment conservatively requires {MIN_VRAM_MIB} MiB free-capable device memory.")
     if gpu.get("free_vram_mib_at_check") is not None and gpu["free_vram_mib_at_check"] < MIN_VRAM_MIB:
@@ -75,7 +85,9 @@ def check_hardware() -> dict:
         blockers.append(f"System RAM is {memory_gib} GiB; minimum configured threshold is {MIN_RAM_GIB} GiB.")
     if available_memory_gib < MIN_AVAILABLE_RAM_GIB:
         blockers.append(f"Currently available system RAM is {available_memory_gib} GiB; the training preflight requires {MIN_AVAILABLE_RAM_GIB} GiB free before model loading.")
-    if disk_gib < MIN_FREE_GIB:
+    if disk_error:
+        blockers.append("Free disk detection failed; training is blocked because available storage cannot be verified.")
+    elif disk_gib < MIN_FREE_GIB:
         blockers.append(f"Free disk is {disk_gib} GiB; minimum configured threshold is {MIN_FREE_GIB} GiB.")
     return {"ready": not blockers, "gpu": gpu, "system_ram_gib": memory_gib, "available_ram_gib_at_check": available_memory_gib, "free_disk_gib": disk_gib,
               "thresholds": {"vram_mib": MIN_VRAM_MIB, "ram_gib": MIN_RAM_GIB, "available_ram_gib": MIN_AVAILABLE_RAM_GIB, "free_disk_gib": MIN_FREE_GIB},

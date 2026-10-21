@@ -33,6 +33,7 @@ Status definitions: **Implemented** is present in this demonstrator; **Partial**
 | Atomic local project persistence | Implemented | Full candidate validation and same-directory atomic replace. Single-process/single-writer only; no lock or multi-writer guarantee. |
 | Artifact metadata and historical retrieval | Partial | Revision/version/checksum metadata, stale listing and retained-file download; metadata index and artifact file are separate atomic writes, not one transaction. |
 | PDF report and vehicle layout | Partial | ReportLab note plus A3 vector top/side/front projection of EV envelope geometry, with scale and revision; not a manufacturing drawing. |
+| Spur-gear reference drawing | Implemented (reference only) | Revision-bound two-view PDF labels pitch/nominal reference diameters, center distance, assumed bore and face width; indexed by checksum and stale-marked. It is not an involute or manufacturing drawing. |
 | Data/model lab, evaluation, training controls | Partial | Dedicated Linux/WSL QLoRA package, hardware preflight, run metadata, paired evaluator, opt-in/redacted trace review/curation, and model lifecycle registry. No successful inference or training run; corpus is eight synthetic records. |
 | Public API, keys, SDK, jobs and webhooks | Planned | Internal versioned routes only; no public deployment readiness. |
 | Provenance, design diff, failure lab, sensitivity, optimization, notebook, collaboration | Planned | See roadmap. |

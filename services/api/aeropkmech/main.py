@@ -28,6 +28,7 @@ from . import artifacts as artifact_store
 from .domain import Design, EditRequest, InterpretRequest
 from .automotive import VehicleDesign, VehicleGenerationRequest, make_vehicle_design, vehicle_bom, vehicle_manifest, export_vehicle_drawing_pdf, export_vehicle_component_stl, export_vehicle_step, export_vehicle_stl
 from .engineering import calculation_details, derive, validate
+from .drawings import GEAR_DRAWING_VERSION, gear_pair_reference_pdf
 from .families import (
     IMPLEMENTED_FAMILIES,
     PLANNED_FAMILY_AREAS,
@@ -649,6 +650,22 @@ def vehicle_layout_export():
         raise ArtifactExecutionError(f"Vehicle layout drawing failed: {exc}") from exc
     finally:
         temporary.unlink(missing_ok=True)
+    return FileResponse(path, media_type="application/pdf", filename=path.name, headers=artifact_headers(metadata, design.revision))
+
+
+@app.get("/api/v1/gear/layout.pdf")
+def gear_layout_export():
+    design = store.load()
+    if design.family != "spur_gear_pair":
+        raise HTTPException(status_code=409, detail="The gear reference drawing is only available for a spur_gear_pair project.")
+    try:
+        payload = gear_pair_reference_pdf(design)
+        require_current_revision(design)
+        path, metadata = artifact_store.publish(payload, ARTIFACTS, design, "gear-reference-drawing", "pdf", GEAR_DRAWING_VERSION)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise ArtifactExecutionError("Gear reference drawing generation failed.") from exc
     return FileResponse(path, media_type="application/pdf", filename=path.name, headers=artifact_headers(metadata, design.revision))
 
 

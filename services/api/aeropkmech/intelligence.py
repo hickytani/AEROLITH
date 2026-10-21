@@ -299,7 +299,7 @@ def propose_specification(text: str) -> EngineeringSpecification:
             parameter_refs=["pinion_teeth", "gear_teeth", "module_mm"],
             status="PROPOSED" if not extraction.missing else "NEEDS_INPUT",
         )]
-        artifacts = ["STEP", "STL", "HTML report", "PDF report"]
+        artifacts = ["STEP", "STL", "HTML report", "PDF report", "dimensioned gear reference layout PDF"]
     else:
         components, connections, artifacts = [], [], []
 

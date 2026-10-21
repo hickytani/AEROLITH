@@ -52,7 +52,7 @@ class SpurGearPairFamily:
             {"name": "input_torque_Nm", "unit": "N·m", "minimum_exclusive": 0},
             {"name": "input_speed_rpm", "unit": "rpm", "minimum_exclusive": 0},
         ),
-        capabilities=("typed parameter validation", "ideal ratio and kinematics", "educational polygonal CAD", "STEP/STL and reports"),
+        capabilities=("typed parameter validation", "ideal ratio and kinematics", "educational polygonal CAD", "STEP/STL, reports, and reference drawing"),
         limitations=("not involute", "no tooth-contact or interference analysis", "no strength, fatigue, thermal, or safety rating", "single local project store"),
         artifacts=("step", "stl", "html", "pdf"),
         exporters=(

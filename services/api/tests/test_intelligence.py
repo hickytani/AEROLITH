@@ -52,7 +52,7 @@ def test_complete_spur_gear_request_produces_reviewable_connected_specification(
     assert ratio.value == 3
     assert ratio.source == "derived"
     assert ratio.status == "DERIVED"
-    assert {"STEP", "STL", "HTML report", "PDF report"} == set(result.supported_artifacts)
+    assert {"STEP", "STL", "HTML report", "PDF report", "dimensioned gear reference layout PDF"} == set(result.supported_artifacts)
 
 
 def test_incomplete_request_does_not_fill_from_default_and_keeps_reviewable_structure():

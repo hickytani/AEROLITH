@@ -56,7 +56,9 @@ currently available system/GPU memory and refuses to start unless it sees at
 least 8 GiB GPU memory available, 16 GiB total RAM, 8 GiB available RAM and
 30 GiB free disk. It therefore correctly refuses on this machine before
 loading weights. These thresholds are conservative guards, not a peak-memory
-proof. The pinned
+proof. GPU telemetry timeouts or malformed output and disk-capacity read errors
+fail closed before model loading; mocked regression tests cover those cases.
+The pinned
 bitsandbytes QLoRA environment targets Linux/WSL; the application workspace
 is native Windows.
 
@@ -77,7 +79,12 @@ not yet tested.” No Qwen3-4B/8B weights were downloaded, no inference quality
 score was produced, and no training run was executed. After those inference
 attempts the Ollama API stopped responding; a later `ollama ps` invocation
 could not manage its service because the environment denied access to Ollama
-log files. The service is currently unavailable in this environment.
+log files. A fresh read-only probe on 2026-10-21 now reaches the loopback
+service and finds `qwen3:0.6b` installed, reporting
+`MODEL_INSTALLED_NOT_INFERRED`. The application model setting remains unset,
+so the application continues to use deterministic behavior. This probe did
+not run inference; the earlier runtime failures remain the only inference
+evidence.
 
 ## Dataset and curation
 
