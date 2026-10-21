@@ -24,7 +24,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class ModelUnavailable(RuntimeError):
-    pass
+    def __init__(self, message: str, code: str = "INFERENCE_FAILED"):
+        super().__init__(message)
+        self.code = code
 
 
 class ComponentAnswer(BaseModel):
@@ -36,6 +38,17 @@ class ComponentAnswer(BaseModel):
 
 class ModelProvider(Protocol):
     async def generate(self, prompt: str, *, system: str, max_output_chars: int = 6000) -> str: ...
+
+
+def _runtime_failure_code(detail: str) -> str:
+    lowered = detail.lower()
+    if "out of memory" in lowered or "cudamalloc failed" in lowered or "failed to allocate" in lowered:
+        return "RESOURCE_EXHAUSTED"
+    if "stack-based buffer overrun" in lowered or "0xc0000409" in lowered:
+        return "RUNTIME_CRASH"
+    if "model" in lowered and ("not found" in lowered or "does not exist" in lowered):
+        return "MODEL_NOT_INSTALLED"
+    return "INFERENCE_FAILED"
 
 
 class OllamaProvider:
@@ -51,13 +64,37 @@ class OllamaProvider:
         self.base_url = base_url.rstrip("/")
         self.timeout = min(max(timeout, 1), 90)
 
-    async def health(self) -> bool:
+    async def probe(self) -> dict[str, Any]:
+        """Check the local service and exact configured model independently."""
         try:
             async with httpx.AsyncClient(timeout=2, trust_env=False) as client:
                 result = await client.get(f"{self.base_url}/api/tags")
-            return result.is_success
+                result.raise_for_status()
+                payload = result.json()
+            models = payload.get("models") if isinstance(payload, dict) else None
+            if not isinstance(models, list):
+                return {"service_reachable": True, "model_installed": False, "status": "INVALID_SERVICE_RESPONSE"}
+            installed = any(
+                isinstance(item, dict) and self.model in {item.get("name"), item.get("model")}
+                for item in models
+            )
+            return {
+                "service_reachable": True,
+                "model_installed": installed,
+                "status": "MODEL_INSTALLED_NOT_INFERRED" if installed else "MODEL_NOT_INSTALLED",
+            }
+        except httpx.TimeoutException:
+            return {"service_reachable": False, "model_installed": False, "status": "SERVICE_TIMEOUT"}
+        except httpx.HTTPStatusError:
+            return {"service_reachable": True, "model_installed": False, "status": "SERVICE_HTTP_ERROR"}
+        except json.JSONDecodeError:
+            return {"service_reachable": True, "model_installed": False, "status": "INVALID_SERVICE_RESPONSE"}
         except (httpx.HTTPError, ValueError):
-            return False
+            return {"service_reachable": False, "model_installed": False, "status": "SERVICE_UNAVAILABLE"}
+
+    async def health(self) -> bool:
+        status = await self.probe()
+        return status["service_reachable"] and status["model_installed"]
 
     async def generate(self, prompt: str, *, system: str, max_output_chars: int = 6000) -> str:
         if len(prompt) > 12000 or len(system) > 3000:
@@ -70,11 +107,23 @@ class OllamaProvider:
                           "stream": False, "format": "json", "options": {"num_predict": 800}},
                 )
                 response.raise_for_status()
-                text = response.json().get("response")
-        except (httpx.HTTPError, ValueError, KeyError) as exc:
-            raise ModelUnavailable("Local model inference is unavailable or failed.") from exc
+        except httpx.TimeoutException as exc:
+            raise ModelUnavailable("Local model inference timed out.", "TIMEOUT") from exc
+        except httpx.ConnectError as exc:
+            raise ModelUnavailable("Local inference service is unavailable.", "SERVICE_UNAVAILABLE") from exc
+        except httpx.HTTPStatusError as exc:
+            raise ModelUnavailable("Local model inference failed.", _runtime_failure_code(exc.response.text[:2000])) from exc
+        except httpx.HTTPError as exc:
+            raise ModelUnavailable("Local model inference failed.", "INFERENCE_FAILED") from exc
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ModelUnavailable("Local model returned malformed service JSON.", "MALFORMED_SERVICE_RESPONSE") from exc
+        if isinstance(payload, dict) and isinstance(payload.get("error"), str):
+            raise ModelUnavailable("Local model inference failed.", _runtime_failure_code(payload["error"][:2000]))
+        text = payload.get("response") if isinstance(payload, dict) else None
         if not isinstance(text, str) or len(text) > max_output_chars:
-            raise ModelUnavailable("Local model returned an invalid or oversized response.")
+            raise ModelUnavailable("Local model returned an invalid or oversized response.", "INVALID_MODEL_OUTPUT")
         return text
 
 
@@ -87,9 +136,9 @@ class OllamaRequirementProvider(OllamaProvider):
             output = await self.generate(prompt, system=system, max_output_chars=3000)
             value = json.loads(output)
         except (json.JSONDecodeError, TypeError) as exc:
-            raise ModelUnavailable("Local model did not return valid requirement JSON.") from exc
+            raise ModelUnavailable("Local model did not return valid requirement JSON.", "INVALID_MODEL_OUTPUT") from exc
         if not isinstance(value, dict):
-            raise ModelUnavailable("Local model requirement output must be a JSON object.")
+            raise ModelUnavailable("Local model requirement output must be a JSON object.", "INVALID_MODEL_OUTPUT")
         return value
 
 

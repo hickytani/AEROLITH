@@ -14,18 +14,26 @@ python scripts/evaluate_models.py --base-model <base-runtime-name> --base-revisi
 ```
 
 The runner requires a full immutable Hugging Face commit SHA, validates the
-dataset, then checks for at least 8 GiB VRAM, 16 GiB RAM and 30 GiB free disk
-before loading a base model. It uses NF4 QLoRA, a frozen base and adapter
-checkpoints. It writes run metadata but does not evaluate or promote an
-adapter. Evaluation on the unchanged base and candidate, artifact checksums,
-and human approval are separate required steps. Interrupted runs resume from
-an existing trainer checkpoint when available.
+dataset, then checks for at least 8 GiB total VRAM, 16 GiB total RAM, 8 GiB
+currently available RAM and 30 GiB free disk before loading a base model. It
+records current free VRAM when `nvidia-smi` provides it. These are conservative
+gates, not a peak-memory guarantee. It uses NF4 QLoRA, a frozen base and
+adapter checkpoints. It writes run metadata but does not evaluate or promote
+an adapter. Evaluation on the unchanged base and candidate, artifact
+checksums, and human approval are separate required steps. Interrupted runs
+resume from an existing trainer checkpoint when available.
 
-The current machine has an RTX 3050 Laptop GPU with **6 GiB VRAM**, **15.69 GiB
-system RAM**, and **500 GiB free disk**. GPU VRAM and system RAM are below the
-configured training gate; no large model was downloaded and no fine-tuning run
-was attempted. An inference attempt using the already-installed Qwen3 0.6B
-failed at CUDA allocation with out-of-memory. Do not bypass the training gate.
+The 2026-10-21 preflight measured an RTX 3050 Laptop GPU with **6 GiB total
+VRAM** (**5.70 GiB free at latest measurement**), **15.69 GiB total RAM**
+(**1.73 GiB currently available**) and **498.13 GiB free disk**. GPU VRAM,
+total RAM and available RAM are below the configured training gate. The installed Ollama
+0.40.6 service lists `qwen3:0.6b`, but a bounded GPU inference attempt failed
+with CUDA OOM while requesting a 429,173,760-byte buffer. A CPU-only attempt
+with a 512-token context and 32-token output failed with Windows `0xc0000409`
+while allocating a 310,250,496-byte buffer. No response was generated. No
+large model was downloaded and no fine-tuning run was attempted. The Ollama
+API stopped responding after the failed inference attempts and is currently
+unavailable in this environment. Do not bypass the training gate.
 
 The committed fixture set `engineering-v2.0.0` contains eight synthetic,
 hand-authored records across eight task categories. It is only a development
@@ -42,8 +50,10 @@ Git. Ollama is a separate inference service. Set `AEROPKMECH_OLLAMA_MODEL` to
 an installed local model to enable it; set
 `AEROPKMECH_ENABLE_MODEL_EXTRACTION=true` only to opt into model-assisted
 gear extraction. No external API key is used. Unavailable or invalid model
-responses fall back to the deterministic parser. Every proposal remains
-uncommitted until reviewed.
+responses fall back to the deterministic parser; status distinguishes an
+unavailable service, absent model, resource exhaustion, runtime crash, timeout
+and invalid output. Readiness does not claim inference success. Every proposal
+remains uncommitted until reviewed.
 
 ## Base model candidates
 

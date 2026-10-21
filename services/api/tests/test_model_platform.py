@@ -1,8 +1,10 @@
 import pytest
+import asyncio
+import httpx
 from concurrent.futures import ThreadPoolExecutor
 
 from aeropkmech.model_platform import (
-    ModelRegistry, ModelState, OllamaProvider, component_context, configured_runtime_model, redact_sensitive,
+    ModelRegistry, ModelState, ModelUnavailable, OllamaProvider, component_context, configured_runtime_model, redact_sensitive,
     validate_split_files, validate_tool_proposal,
 )
 from aeropkmech.store import default_design
@@ -21,6 +23,90 @@ def test_local_model_adapter_rejects_non_loopback_url():
     with pytest.raises(ValueError):
         OllamaProvider("qwen3:4b", "http://192.168.1.2:11434")
     assert OllamaProvider("qwen3:4b").base_url == "http://127.0.0.1:11434"
+
+
+@pytest.mark.parametrize(("detail", "expected"), [
+    ("cudaMalloc failed: out of memory", "RESOURCE_EXHAUSTED"),
+    ("The system detected an overrun of a stack-based buffer in this application (0xc0000409)", "RUNTIME_CRASH"),
+    ("model qwen3:4b not found", "MODEL_NOT_INSTALLED"),
+])
+def test_ollama_inference_errors_are_classified_without_exposing_runtime_text(monkeypatch, detail, expected):
+    original_client = httpx.AsyncClient
+
+    def make_client(**kwargs):
+        request = httpx.Request("POST", "http://127.0.0.1:11434/api/generate")
+        response = httpx.Response(500, json={"error": detail}, request=request)
+        transport = httpx.MockTransport(lambda _: response)
+        return original_client(transport=transport, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", make_client)
+    provider = OllamaProvider("qwen3:0.6b", timeout=2)
+    with pytest.raises(ModelUnavailable) as raised:
+        asyncio.run(provider.generate("{}", system="Return JSON."))
+    assert raised.value.code == expected
+    assert detail not in str(raised.value)
+
+
+def test_ollama_probe_distinguishes_missing_model_from_unavailable_service(monkeypatch):
+    original_client = httpx.AsyncClient
+
+    def make_client(**kwargs):
+        request = httpx.Request("GET", "http://127.0.0.1:11434/api/tags")
+        response = httpx.Response(200, json={"models": [{"name": "qwen3:0.6b", "model": "qwen3:0.6b"}]}, request=request)
+        return original_client(transport=httpx.MockTransport(lambda _: response), **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", make_client)
+    installed = asyncio.run(OllamaProvider("qwen3:0.6b").probe())
+    missing = asyncio.run(OllamaProvider("qwen3:4b").probe())
+    assert installed == {"service_reachable": True, "model_installed": True, "status": "MODEL_INSTALLED_NOT_INFERRED"}
+    assert missing["service_reachable"] is True
+    assert missing["model_installed"] is False
+    assert missing["status"] == "MODEL_NOT_INSTALLED"
+
+
+@pytest.mark.parametrize(("exception_type", "expected"), [
+    (httpx.ReadTimeout, "TIMEOUT"),
+    (httpx.ConnectError, "SERVICE_UNAVAILABLE"),
+])
+def test_ollama_generate_classifies_timeout_and_unavailable_service(monkeypatch, exception_type, expected):
+    original_client = httpx.AsyncClient
+
+    def make_client(**kwargs):
+        def fail(request):
+            raise exception_type("local inference failure", request=request)
+        return original_client(transport=httpx.MockTransport(fail), **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", make_client)
+    provider = OllamaProvider("qwen3:0.6b", timeout=1)
+    with pytest.raises(ModelUnavailable) as raised:
+        asyncio.run(provider.generate("{}", system="JSON only"))
+    assert raised.value.code == expected
+
+
+def test_ollama_generate_classifies_malformed_service_json(monkeypatch):
+    original_client = httpx.AsyncClient
+
+    def make_client(**kwargs):
+        response = httpx.Response(200, content=b"not-json", headers={"Content-Type": "application/json"})
+        return original_client(transport=httpx.MockTransport(lambda _: response), **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", make_client)
+    provider = OllamaProvider("qwen3:0.6b", timeout=1)
+    with pytest.raises(ModelUnavailable) as raised:
+        asyncio.run(provider.generate("{}", system="JSON only"))
+    assert raised.value.code == "MALFORMED_SERVICE_RESPONSE"
+
+
+def test_ollama_probe_marks_malformed_tags_response_not_ready(monkeypatch):
+    original_client = httpx.AsyncClient
+
+    def make_client(**kwargs):
+        response = httpx.Response(200, content=b"not-json", headers={"Content-Type": "application/json"})
+        return original_client(transport=httpx.MockTransport(lambda _: response), **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", make_client)
+    result = asyncio.run(OllamaProvider("qwen3:0.6b").probe())
+    assert result == {"service_reachable": True, "model_installed": False, "status": "INVALID_SERVICE_RESPONSE"}
 
 
 def test_tool_proposals_are_revision_bound_and_never_executed():

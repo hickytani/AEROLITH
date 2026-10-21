@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 from aeropkmech import store
 from aeropkmech.main import app
-from aeropkmech.model_platform import ModelRegistry
+from aeropkmech.model_platform import ModelRegistry, ModelUnavailable, OllamaProvider, OllamaRequirementProvider
 
 
 def _client(tmp_path, monkeypatch):
@@ -78,6 +78,56 @@ def test_model_status_and_tool_proposals_fail_closed(tmp_path, monkeypatch):
     assert good.status_code == 200 and good.json()["executed"] is False
     bad = client.post("/api/v1/engineering/tools/validate-proposal", json={"tool": "run_shell", "expected_revision": 1, "reason": "do it"})
     assert bad.status_code == 422
+
+
+def test_model_status_does_not_call_running_ollama_ready_when_model_missing(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    monkeypatch.setenv("AEROPKMECH_OLLAMA_MODEL", "qwen3:4b")
+    async def probe(self):
+        return {"service_reachable": True, "model_installed": False, "status": "MODEL_NOT_INSTALLED"}
+    monkeypatch.setattr(OllamaProvider, "probe", probe)
+    result = client.get("/api/v1/model/status").json()
+    assert result["service_reachable"] is True
+    assert result["model_installed"] is False
+    assert result["available"] is False
+    assert result["status"] == "MODEL_NOT_INSTALLED"
+    assert result["inference_tested"] is False
+
+
+def test_component_answer_reports_resource_failure_and_uses_canonical_fallback(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    monkeypatch.setenv("AEROPKMECH_OLLAMA_MODEL", "qwen3:0.6b")
+    async def probe(self):
+        return {"service_reachable": True, "model_installed": True, "status": "MODEL_INSTALLED_NOT_INFERRED"}
+    async def fail(self, prompt, *, system, max_output_chars=6000):
+        raise ModelUnavailable("Local model inference failed.", "RESOURCE_EXHAUSTED")
+    monkeypatch.setattr(OllamaProvider, "probe", probe)
+    monkeypatch.setattr(OllamaProvider, "generate", fail)
+    before = client.get("/api/v1/project").json()
+    result = client.post("/api/v1/components/explain", json={"component_id": "pinion", "question": "What does this component do?"})
+    after = client.get("/api/v1/project").json()
+    assert result.status_code == 200
+    assert result.json()["provider"] == "deterministic-context"
+    assert result.json()["model_status"] == "RESOURCE_EXHAUSTED"
+    assert result.json()["inference_succeeded"] is False
+    assert result.json()["revision"] == before["revision"] == after["revision"]
+
+
+def test_model_requirement_extraction_falls_back_with_specific_failure_status(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    monkeypatch.setenv("AEROPKMECH_OLLAMA_MODEL", "qwen3:0.6b")
+    monkeypatch.setenv("AEROPKMECH_ENABLE_MODEL_EXTRACTION", "true")
+    async def fail(self, text):
+        raise ModelUnavailable("Local model inference failed.", "RESOURCE_EXHAUSTED")
+    monkeypatch.setattr(OllamaRequirementProvider, "propose", fail)
+    before = client.get("/api/v1/project").json()
+    result = client.post("/api/v1/project/interpret", json={"text": "18 tooth pinion and 54 tooth gear, module 2 mm, 8 Nm, 900 rpm, 12 mm face width"})
+    after = client.get("/api/v1/project").json()
+    assert result.status_code == 200
+    assert result.json()["model_status"] == "RESOURCE_EXHAUSTED"
+    assert result.json()["inference_succeeded"] is False
+    assert "pinion_teeth" in result.json()["evidence"]
+    assert after["revision"] == before["revision"]
 
 
 def test_cors_allows_local_trace_delete_method(tmp_path, monkeypatch):

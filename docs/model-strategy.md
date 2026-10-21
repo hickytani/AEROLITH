@@ -48,15 +48,36 @@ Qwen3-8B is a comparison candidate only. Its model card lists Apache-2.0,
 8B parameters, and Transformers support. It is not downloaded.
 [Qwen3-8B model card](https://huggingface.co/Qwen/Qwen3-8B)
 
-Hardware preflight on 2026-10-20 detected an NVIDIA GeForce RTX 3050 6GB
-Laptop GPU (6,144 MiB, driver 581.95; NVIDIA-SMI reports CUDA 13.0), 15.69
-GiB system RAM, and 500.93 GiB free disk. The QLoRA runner is conservatively
-gated at 8 GiB VRAM, 16 GiB RAM, and 30 GiB free disk, so it refuses to start
-on this machine. The pinned bitsandbytes QLoRA environment targets Linux/WSL;
-the current application workspace is native Windows. An inference attempt
-using the already-installed Ollama `qwen3:0.6b` failed during CUDA allocation
-with out-of-memory. No Qwen3-4B/8B weights were downloaded, no inference
-quality score was produced, and no training run was executed.
+Hardware preflight on 2026-10-21 detected an NVIDIA GeForce RTX 3050 6GB
+Laptop GPU (6,144 MiB total, 5,834 MiB free at the latest check, driver
+581.95), 15.69 GiB total system RAM, 1.73 GiB currently available RAM, and
+498.13 GiB free disk. The training preflight now records both total and
+currently available system/GPU memory and refuses to start unless it sees at
+least 8 GiB GPU memory available, 16 GiB total RAM, 8 GiB available RAM and
+30 GiB free disk. It therefore correctly refuses on this machine before
+loading weights. These thresholds are conservative guards, not a peak-memory
+proof. The pinned
+bitsandbytes QLoRA environment targets Linux/WSL; the application workspace
+is native Windows.
+
+At the start of the investigation, local Ollama 0.40.6 was reachable at
+loopback and the already installed `qwen3:0.6b` quantized model was listed by
+`/api/tags`. A bounded
+GPU inference request failed at model load: `cudaMalloc failed: out of
+memory`, attempting a 429,173,760-byte CUDA buffer. A second CPU-only request
+(`num_gpu=0`, 512-token context, 32-token output) failed with Windows status
+`0xc0000409` while allocating a 310,250,496-byte CPU buffer. No response was
+generated. System telemetry at the later preflight showed only 1.37 GiB
+available RAM, which is consistent with insufficient headroom, though it
+does not prove the precise cause of the native runtime crash. The application
+process currently has no model selected, so `/api/v1/model/status` correctly
+reports `DISABLED`; when configured, the endpoint now distinguishes Ollama
+service reachability, exact model installation and “installed but inference
+not yet tested.” No Qwen3-4B/8B weights were downloaded, no inference quality
+score was produced, and no training run was executed. After those inference
+attempts the Ollama API stopped responding; a later `ollama ps` invocation
+could not manage its service because the environment denied access to Ollama
+log files. The service is currently unavailable in this environment.
 
 ## Dataset and curation
 
@@ -117,7 +138,10 @@ evaluation commands. Current state:
 
 - Deterministic gear and EV proposal workflows: implemented.
 - Local Ollama provider and component-grounded Q&A: implemented, but the
-  available 0.6B model's inference attempt failed from CUDA out-of-memory.
+  available 0.6B model is installed; GPU inference failed from CUDA OOM
+  and CPU inference failed with a native runtime crash; successful inference
+  remains blocked. Status now distinguishes an unreachable service, an
+  uninstalled model and an installed model that has not passed inference.
 - Training capture/review/curation boundary: implemented and opt-in.
 - Versioned dataset fixtures, provenance checks, split validation and hashes:
   implemented; the dataset is too small for useful fine-tuning.

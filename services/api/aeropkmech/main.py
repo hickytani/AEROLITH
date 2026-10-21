@@ -103,10 +103,16 @@ async def model_status():
     if not model_name:
         return {"provider": "deterministic-fallback", "configured": False, "available": False,
                 "status": "DISABLED", "model_id": None, "note": "No local model is selected. Deterministic workflows remain active."}
-    provider = OllamaProvider(model_name, os.environ.get("AEROPKMECH_OLLAMA_URL", "http://127.0.0.1:11434"))
-    available = await provider.health()
-    return {"provider": "ollama-local", "model": model_name, "model_id": model_id, "configured": True, "available": available,
-            "status": "READY" if available else "UNAVAILABLE", "endpoint": "loopback-only"}
+    try:
+        provider = OllamaProvider(model_name, os.environ.get("AEROPKMECH_OLLAMA_URL", "http://127.0.0.1:11434"))
+    except ValueError:
+        return {"provider": "ollama-local", "model": model_name, "model_id": model_id, "configured": True,
+                "available": False, "service_reachable": False, "model_installed": False,
+                "status": "INVALID_CONFIGURATION", "endpoint": "loopback-only"}
+    probe = await provider.probe()
+    return {"provider": "ollama-local", "model": model_name, "model_id": model_id, "configured": True,
+            "available": probe["service_reachable"] and probe["model_installed"], **probe,
+            "endpoint": "loopback-only", "inference_tested": False}
 
 
 class ComponentQuestion(BaseModel):
@@ -130,10 +136,14 @@ async def explain_component(request: ComponentQuestion):
     )
     model_name, model_id = configured_runtime_model(MODEL_REGISTRY, os.environ.get("AEROPKMECH_OLLAMA_MODEL", ""))
     if not model_name:
-        return {**deterministic.model_dump(), "provider": "deterministic-context", "model_available": False, "revision": design.revision}
-    provider = OllamaProvider(model_name, os.environ.get("AEROPKMECH_OLLAMA_URL", "http://127.0.0.1:11434"))
-    if not await provider.health():
-        return {**deterministic.model_dump(), "provider": "deterministic-context", "model_available": False, "revision": design.revision, "model_status": "UNAVAILABLE"}
+        return {**deterministic.model_dump(), "provider": "deterministic-context", "model_available": False, "model_status": "DISABLED", "inference_succeeded": False, "revision": design.revision}
+    try:
+        provider = OllamaProvider(model_name, os.environ.get("AEROPKMECH_OLLAMA_URL", "http://127.0.0.1:11434"))
+    except ValueError:
+        return {**deterministic.model_dump(), "provider": "deterministic-context", "model_available": False, "model_status": "INVALID_CONFIGURATION", "inference_succeeded": False, "revision": design.revision}
+    probe = await provider.probe()
+    if not probe["service_reachable"] or not probe["model_installed"]:
+        return {**deterministic.model_dump(), "provider": "deterministic-context", "model_available": probe["model_installed"], "model_status": probe["status"], "inference_succeeded": False, "revision": design.revision}
     system = ("Answer a question about the selected engineering component using only supplied JSON context. "
               "Do not infer ratings, materials, safety, achieved range, or missing specifications. Return JSON with answer, evidence, limitations. "
               "The result is advisory and cannot change the design.")
@@ -144,11 +154,11 @@ async def explain_component(request: ComponentQuestion):
         current = store.load()
         if current.revision != design.revision:
             raise HTTPException(status_code=409, detail="Project changed while the component explanation was being generated.", headers={"X-Design-Revision": str(current.revision)})
-        return {**answer.model_dump(), "provider": "ollama-local", "model": model_name, "model_id": model_id, "model_available": True, "revision": design.revision}
-    except ModelUnavailable:
-        return {**deterministic.model_dump(), "provider": "deterministic-context", "model_available": False, "revision": design.revision, "model_status": "INFERENCE_FAILED"}
+        return {**answer.model_dump(), "provider": "ollama-local", "model": model_name, "model_id": model_id, "model_available": True, "model_status": "INFERENCE_SUCCEEDED", "inference_succeeded": True, "revision": design.revision}
+    except ModelUnavailable as exc:
+        return {**deterministic.model_dump(), "provider": "deterministic-context", "model_available": True, "revision": design.revision, "model_status": exc.code, "inference_succeeded": False}
     except (ValueError, json.JSONDecodeError):
-        return {**deterministic.model_dump(), "provider": "deterministic-context", "model_available": True, "revision": design.revision, "model_status": "INVALID_MODEL_OUTPUT"}
+        return {**deterministic.model_dump(), "provider": "deterministic-context", "model_available": True, "revision": design.revision, "model_status": "INVALID_MODEL_OUTPUT", "inference_succeeded": False}
 
 
 class TraceCapture(BaseModel):
@@ -440,10 +450,17 @@ async def interpret(request: InterpretRequest):
             result = await extract(request.text, provider)
             result_dict = result.model_dump(mode="json")
             result_dict["model_status"] = "PROPOSED_REQUIRES_REVIEW"
+            result_dict["inference_succeeded"] = True
             return result_dict
-        except (ModelUnavailable, ValueError):
+        except ModelUnavailable as exc:
             fallback = (await extract(request.text)).model_dump(mode="json")
-            fallback["model_status"] = "UNAVAILABLE_OR_INVALID_OUTPUT_DETERMINISTIC_FALLBACK"
+            fallback["model_status"] = exc.code
+            fallback["inference_succeeded"] = False
+            return fallback
+        except ValueError:
+            fallback = (await extract(request.text)).model_dump(mode="json")
+            fallback["model_status"] = "INVALID_MODEL_OUTPUT"
+            fallback["inference_succeeded"] = False
             return fallback
     return (await extract(request.text)).model_dump(mode="json")
 

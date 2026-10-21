@@ -26,8 +26,8 @@ The API is versioned under `/api/v1`; FastAPI's interactive schema is available 
 | GET | `/api/v1/vehicle/bom.json` | Preliminary BOM from generated geometry; materials, mass and cost remain null. |
 | GET | `/api/v1/artifacts` | List indexed artifacts and flag prior revisions as stale. |
 | GET | `/api/v1/artifacts/{filename}` | Retrieve a retained, checksum-verified artifact; response includes stale state. |
-| GET | `/api/v1/model/status` | Local Ollama readiness and active registry model metadata; deterministic mode when disabled. |
-| POST | `/api/v1/components/explain` | Answer a bounded selected-component question using canonical context or deterministic fallback. |
+| GET | `/api/v1/model/status` | Loopback service reachability, exact model installation, and active registry metadata; it does not claim inference success. |
+| POST | `/api/v1/components/explain` | Answer a bounded selected-component question using canonical context; returns inference status or deterministic fallback without changing design state. |
 | GET | `/api/v1/learning/dataset/status?version=...` | Verify provenance, licenses, split membership, hashes and dataset version. |
 | POST | `/api/v1/learning/traces` | Capture a redacted local execution trace only when collection is enabled and request opts in. |
 | POST | `/api/v1/learning/traces/{id}/review` | Record an explicit local review decision. |
@@ -45,7 +45,7 @@ The geometry route accepts an optional `revision` query parameter. If it differs
 
 The local Platform page derives its endpoint inventory from the live OpenAPI document instead of maintaining a separate route list. Local API access has no authentication; do not expose this single-project, single-writer service as a public multi-tenant API. API-key issuance and hosted services are not implemented.
 
-Model extraction is disabled unless `AEROPKMECH_ENABLE_MODEL_EXTRACTION=true` and a loopback Ollama model is configured. `POST /components/explain` uses the active registry model, if one is approved, or `AEROPKMECH_OLLAMA_MODEL`; absent/unavailable inference falls back to deterministic component context. Model responses cannot mutate project state or execute validated tool proposals. Training capture requires both `AEROPKMECH_ENABLE_TRAINING_CAPTURE=true` and `opt_in: true`; captured data is redacted and remains raw/unreviewed until explicitly approved and curated. See [model strategy](model-strategy.md) for training isolation and current hardware limits.
+Model extraction is disabled unless `AEROPKMECH_ENABLE_MODEL_EXTRACTION=true` and a loopback Ollama model is configured. `/api/v1/model/status` checks service reachability and the exact model tag but marks `inference_tested: false`; only an actual schema-valid answer is reported as `INFERENCE_SUCCEEDED`. `POST /api/v1/components/explain` uses the active registry model, if one is approved, or `AEROPKMECH_OLLAMA_MODEL`; absent/unavailable inference falls back to deterministic component context and exposes a bounded failure status. Model responses cannot mutate project state or execute validated tool proposals. Training capture requires both `AEROPKMECH_ENABLE_TRAINING_CAPTURE=true` and `opt_in: true`; captured data is redacted and remains raw/unreviewed until explicitly approved and curated. See [model strategy](model-strategy.md) for training isolation and current hardware limits.
 
 Local quick start:
 
