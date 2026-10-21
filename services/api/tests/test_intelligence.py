@@ -35,10 +35,11 @@ def test_torque_unit_conversion_is_explicit():
 
 
 def test_complete_spur_gear_request_produces_reviewable_connected_specification():
-    result = propose_specification(
+    prompt = (
         "Design an external spur gear pair: pinion 18 teeth and driven gear 54 teeth, "
         "module 2 mm, face width 12 mm, input torque 8 N·m, input speed 900 rpm."
     )
+    result = propose_specification(prompt)
     assert result.intent == "SUPPORTED_SPUR_GEAR_PAIR"
     assert result.family_id == "spur_gear_pair"
     assert result.can_commit is True
@@ -52,6 +53,11 @@ def test_complete_spur_gear_request_produces_reviewable_connected_specification(
     assert ratio.value == 3
     assert ratio.source == "derived"
     assert ratio.status == "DERIVED"
+    assert ratio.canonical_target == "requirements.gear_ratio"
+    assert ratio.source_span is None
+    module = next(item for item in result.parameters if item.name == "module_mm")
+    assert prompt[module.source_span["start"]:module.source_span["end"]] == module.evidence
+    assert module.affected_components == ["pinion", "gear", "gear-pair"]
     assert {"STEP", "STL", "HTML report", "PDF report", "dimensioned gear reference layout PDF"} == set(result.supported_artifacts)
 
 
@@ -116,6 +122,11 @@ def test_two_seat_electric_sports_car_prompt_extracts_dimensions_and_decomposes_
     assert "layout drawing PDF" in result.supported_artifacts
     assert result.can_commit is True
     assert any("wheelbase" in question for question in result.unresolved_questions)
+    assert result.completion_scope == "PARTIAL_WITH_UNSUPPORTED_REQUESTS"
+    assert any("complete mechanical/electrical systems" in item for item in result.unsupported_requests)
+    assert all(item.status == "CONCEPTUAL_ONLY" for item in result.connections)
+    tire = next(item for item in result.components if item.id == "tire-front-left")
+    assert "tire_outer_diameter_mm" in tire.parameter_refs
 
 
 def test_unmatched_non_electric_car_does_not_claim_a_vehicle_architecture():
@@ -135,3 +146,26 @@ def test_vehicle_units_and_out_of_scope_dimensions_remain_explicit():
     assert length.value == 42000
     assert length.status == "INVALID"
     assert out_of_range.validation_issues
+
+
+def test_conflicting_duplicate_parameters_and_incompatible_units_are_not_silently_accepted():
+    gear = propose_specification("External spur gear pair, pinion 18 teeth and pinion 20 teeth, driven gear 54 teeth, module 2 mm, face width 12 mm, torque 8 Nm, speed 900 rpm")
+    assert not gear.can_commit
+    assert any("Conflicting explicit values for pinion_teeth" in item for item in gear.conflicts)
+
+    vehicle = propose_specification("Two-seater electric sports car, 4.2 m long, 4.5 m long, 1.8 m wide, 300 km range")
+    assert not vehicle.can_commit
+    assert any("Conflicting explicit values for overall_length_mm" in item for item in vehicle.conflicts)
+
+    unsupported_unit = propose_specification("Two-seater electric sports car, 14 ft long, 6 ft wide, 300 km range")
+    assert unsupported_unit.can_commit is False
+    assert any("Unsupported dimension unit" in item for item in unsupported_unit.unsupported_requests)
+    assert next(item for item in unsupported_unit.parameters if item.name == "overall_length_mm").value is None
+
+    propulsion = propose_specification("Two-seater electric hybrid sports car, 4.2 m long, 1.8 m wide, 300 km range")
+    assert propulsion.can_commit is False
+    assert any("Conflicting propulsion" in item for item in propulsion.conflicts)
+
+    packaging = propose_specification("Two-seater electric sports car, 4.2 m long, 1.8 m wide, 300 km range, wheelbase 3500 mm, tire diameter 1000 mm")
+    assert packaging.can_commit is False
+    assert any("Cross-field packaging validation failed" in item for item in packaging.validation_issues)

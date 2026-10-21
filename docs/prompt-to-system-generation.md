@@ -25,7 +25,11 @@ The EV planner is a separate deterministic domain module, `automotive.py`. For t
 
 All electric-vehicle nodes are marked `CONCEPTUAL_ONLY` with `generator_available: false`. There is no automotive family ID, no vehicle geometry generator, no CAD/drawing/BOM artifact, no mass or battery sizing, no performance calculation, and no commit action. Missing wheelbase, track, mass, speed, drive cycle, battery, thermal, and regulatory requirements remain explicit. This output is a conceptual architecture proposal; it is not a generated sports car or validated subsystem selection.
 
-The fully supported output path remains the spur gear pair: a complete request can be reviewed and committed, after which real existing CadQuery geometry, ideal calculations, reports and exports are available at the new project revision. Gear extraction is deterministic and does not call an LLM.
+The fully supported output path at this audit's review point was the spur gear pair: a complete request could be reviewed and committed, after which real existing CadQuery geometry, ideal calculations, reports and exports were available at the new project revision. Gear extraction was deterministic and did not call an LLM.
+
+### Later implementation update
+
+The state above is a historical audit of the earlier prompt-only milestone. Subsequent EV and prompt-to-CAD milestones added `electric_vehicle@1.0`, a bounded 27-solid CadQuery packaging assembly, parameter-specific editing, and the component-to-requirement traceability described in section 24 of the current completion report. The vehicle remains a conceptual envelope model and does not provide the physical analyses listed as unsupported above.
 
 ## Changed files
 

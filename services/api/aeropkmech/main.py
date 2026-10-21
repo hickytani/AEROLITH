@@ -75,7 +75,16 @@ def response(design: Design | VehicleDesign) -> dict:
     verification = {key: item.model_dump(mode="json") if hasattr(item, "model_dump") else item for key, item in family.verify(design).items()}
     result = {**design.model_dump(mode="json"), "derived": family.calculate(design), "verification": verification}
     if design.family == "spur_gear_pair":
-        return {**result, "calculations": calculation_details(design), "validation": validate(design)}
+        component_refs = {"pinion": ["pinion_teeth", "module_mm", "face_width_mm"], "gear": ["gear_teeth", "module_mm", "face_width_mm"], "gear-pair": ["input_torque_Nm", "input_speed_rpm", "gear_ratio"]}
+        values = {**design.requirements.model_dump(), "pinion_teeth": design.components[0].teeth, "gear_teeth": design.components[1].teeth}
+        units = {"pinion_teeth":"teeth","gear_teeth":"teeth","gear_ratio":"ratio","module_mm":"mm","face_width_mm":"mm","input_torque_Nm":"N·m","input_speed_rpm":"rpm"}
+        trace = {name:{"canonical_target":f"requirements.{name}" if name not in {"pinion_teeth","gear_teeth"} else f"components.{name.removesuffix('_teeth')}.teeth","value":value,"unit":units[name],"source":design.requirement_sources.get(name,"derived" if name=="gear_ratio" else "assumed"),"evidence":design.requirement_evidence.get(name)} for name,value in values.items()}
+        for item in trace.values():
+            evidence=item["evidence"]
+            if evidence and design.source_prompt:
+                offset=design.source_prompt.find(evidence)
+                if offset>=0: item["source_span"]={"start":offset,"end":offset+len(evidence),"text":evidence}
+        return {**result, "requirement_traceability":{"source_prompt":design.source_prompt,"components":{key:refs for key,refs in component_refs.items()},"parameters":trace}, "calculations": calculation_details(design), "validation": validate(design)}
     result["editable_parameters"]={name:{**metadata,"value":getattr(design.requirements,name).value,"source":getattr(design.requirements,name).source,"evidence":getattr(design.requirements,name).evidence} for name,metadata in VEHICLE_EDITABLE_PARAMETERS.items()}
     return {**result, "calculations":{"provenance":{"method_version":VEHICLE_GENERATOR_VERSION,"design_revision":design.revision},"results":[]}, "validation":{"state":"PARTIAL","issues":["Conceptual packaging geometry only; range and safety remain unresolved."]}}
 
@@ -420,6 +429,10 @@ def edit_project(edit: EditRequest):
         raise HTTPException(status_code=422, detail="This project belongs to the electric_vehicle family. Submit reviewed EV parameters to /api/v1/project/vehicle/generate.")
     values = edit.model_dump(exclude_none=True)
     expected_revision = values.pop("expected_revision", None)
+    source_prompt = values.pop("source_prompt", None)
+    requirement_sources = values.pop("requirement_sources", {})
+    requirement_evidence = values.pop("requirement_evidence", {})
+    changed_names = set(values)
     if expected_revision is not None and expected_revision != current.revision:
         raise HTTPException(
             status_code=409,
@@ -435,6 +448,21 @@ def edit_project(edit: EditRequest):
     for key, value in values.items():
         setattr(candidate.requirements, key, value)
     candidate.requirements.gear_ratio = candidate.components[1].teeth / candidate.components[0].teeth
+    if source_prompt is not None:
+        candidate.source_prompt = source_prompt
+        candidate.requirement_sources = dict(requirement_sources)
+        candidate.requirement_evidence = dict(requirement_evidence)
+    else:
+        candidate.requirement_sources.update(requirement_sources)
+        candidate.requirement_evidence.update(requirement_evidence)
+    for name in changed_names:
+        if name not in requirement_sources:
+            candidate.requirement_sources[name] = "user-provided"
+        if name not in requirement_evidence:
+            candidate.requirement_evidence.pop(name, None)
+    if changed_names.intersection({"pinion_teeth", "gear_teeth"}):
+        candidate.requirement_sources["gear_ratio"] = "derived"
+        candidate.requirement_evidence.pop("gear_ratio", None)
     candidate.revision += 1
     candidate.updated_at = datetime.now(timezone.utc).isoformat()
     # Validate the complete candidate (including cross-field invariants) before persistence.

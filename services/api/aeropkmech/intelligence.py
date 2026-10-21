@@ -32,6 +32,7 @@ class Extraction(BaseModel):
     missing: list[str]
     conflicts: list[str]
     evidence: dict[str, str]
+    derivations: dict[str, str] = Field(default_factory=dict)
     requires_confirmation: bool = True
 
 
@@ -43,7 +44,12 @@ class SpecificationParameter(BaseModel):
     unit: str
     source: Literal["user-provided", "derived", "assumed", "missing"]
     evidence: str | None
+    derivation: str | None = None
     status: Literal["PROPOSED", "DERIVED", "ASSUMED", "MISSING", "INVALID"]
+    canonical_target: str | None = None
+    source_span: dict[str, int | str] | None = None
+    constraints: list[str] = Field(default_factory=list)
+    affected_components: list[str] = Field(default_factory=list)
 
 
 class SpecificationComponent(BaseModel):
@@ -90,6 +96,7 @@ class EngineeringSpecification(BaseModel):
     conflicts: list[str]
     validation_issues: list[str]
     unsupported_requests: list[str]
+    completion_scope: Literal["SUPPORTED_SCOPE_ONLY", "PARTIAL_WITH_UNSUPPORTED_REQUESTS"] = "SUPPORTED_SCOPE_ONLY"
     requires_confirmation: Literal[True] = True
     can_commit: bool
 
@@ -109,9 +116,21 @@ def _match(pattern: str, text: str, group: int = 1) -> tuple[str | None, str | N
     return found.group(group), found.group(0)
 
 
+def _source_span(text: str, evidence: str | None) -> dict[str, int | str] | None:
+    """Return an exact source location only for text copied from the prompt."""
+    if not evidence or evidence.startswith("derived from"):
+        return None
+    start = text.find(evidence)
+    if start < 0:
+        return None
+    return {"start": start, "end": start + len(evidence), "text": evidence}
+
+
 def extract_local(text: str) -> Extraction:
     evidence: dict[str, str] = {}
+    derivations: dict[str, str] = {}
     fields: dict[str, int | float | None] = {}
+    conflicts: list[str] = []
 
     tooth_patterns = {
         "pinion_teeth": [
@@ -124,12 +143,16 @@ def extract_local(text: str) -> Extraction:
         ],
     }
     for key, patterns in tooth_patterns.items():
+        matches = []
         for pattern in patterns:
-            raw, matched = _match(pattern, text)
-            if raw is not None:
-                fields[key] = int(raw)
-                evidence[key] = matched or ""
-                break
+            matches.extend(re.finditer(pattern, text, flags=re.IGNORECASE))
+        matches = list({(match.start(), match.end()): match for match in reversed(matches)}.values())
+        if matches:
+            parsed = [int(match.group(1)) for match in matches]
+            fields[key] = parsed[0]
+            evidence[key] = matches[0].group(0)
+            if len(set(parsed)) > 1:
+                conflicts.append(f"Conflicting explicit values for {key}: " + "; ".join(match.group(0) for match in matches))
         else:
             fields[key] = None
 
@@ -141,21 +164,26 @@ def extract_local(text: str) -> Extraction:
         "face_width_mm": (r"(?:face\s+width|width)\s*(?:of|is|=|:)?\s*(\d+(?:\.\d+)?)\s*mm\b", float),
     }
     for key, (pattern, convert) in patterns.items():
-        raw, matched = _match(pattern, text)
-        if raw is None:
+        matches = list(re.finditer(pattern, text, flags=re.IGNORECASE))
+        if not matches:
             fields[key] = None
         else:
-            fields[key] = convert(raw)
-            evidence[key] = matched or ""
-            if key == "input_torque_Nm" and re.search(r"N\s*mm\b", matched or "", re.IGNORECASE):
-                fields[key] = float(raw) / 1000
+            parsed = []
+            for match in matches:
+                value = convert(match.group(1))
+                if key == "input_torque_Nm" and re.search(r"N\s*mm\b", match.group(0), re.IGNORECASE):
+                    value = float(value) / 1000
+                parsed.append(value)
+            fields[key] = parsed[0]
+            evidence[key] = matches[0].group(0)
+            if any(abs(value - parsed[0]) > 1e-9 for value in parsed[1:]):
+                conflicts.append(f"Conflicting explicit values for {key}: " + "; ".join(match.group(0) for match in matches))
 
-    conflicts: list[str] = []
     if fields["pinion_teeth"] and fields["gear_teeth"]:
         ratio_from_teeth = fields["gear_teeth"] / fields["pinion_teeth"]
         if fields["gear_ratio"] is None:
             fields["gear_ratio"] = ratio_from_teeth
-            evidence["gear_ratio"] = "derived from explicitly stated pinion and driven gear tooth counts"
+            derivations["gear_ratio"] = "gear_teeth / pinion_teeth"
         elif abs(fields["gear_ratio"] - ratio_from_teeth) > 1e-9:
             conflicts.append(
                 f"Stated ratio {fields['gear_ratio']:g}:1 conflicts with explicit tooth counts ({ratio_from_teeth:g}:1)."
@@ -180,6 +208,7 @@ def extract_local(text: str) -> Extraction:
         missing=missing,
         conflicts=conflicts,
         evidence=evidence,
+        derivations=derivations,
     )
 
 
@@ -216,6 +245,10 @@ def propose_specification(text: str) -> EngineeringSpecification:
             source=parameter.source,
             evidence=parameter.evidence,
             status=parameter.status,
+            canonical_target=parameter.canonical_target,
+            source_span=parameter.source_span,
+            constraints=parameter.constraints,
+            affected_components=parameter.affected_components,
         ) for parameter in vehicle.parameters]
         required_names = {"occupant_capacity", "overall_length_mm", "overall_width_mm", "target_range_km", "propulsion_type"}
         supplied = {item.name for item in parameters if item.source == "user-provided" and item.value is not None}
@@ -228,7 +261,7 @@ def propose_specification(text: str) -> EngineeringSpecification:
         connections = [SpecificationConnection(
             id=relationship.id, source_component=relationship.source_id,
             target_component=relationship.target_id, relationship=relationship.relationship,
-            parameter_refs=[], status="PROPOSED",
+            parameter_refs=[], status=relationship.status,
         ) for relationship in vehicle.relationships]
         return EngineeringSpecification(
             request=text, intent="SUPPORTED_ELECTRIC_VEHICLE" if ready else "CONCEPTUAL_ELECTRIC_VEHICLE",
@@ -237,9 +270,11 @@ def propose_specification(text: str) -> EngineeringSpecification:
             components=components, connections=connections, supported_artifacts=["STEP", "STL", "component STL", "layout drawing PDF", "manifest JSON", "BOM JSON"] if ready else [],
             assumptions=vehicle.assumptions, limitations=vehicle.limitations,
             unresolved_questions=vehicle.unresolved_questions,
-            conflicts=[], validation_issues=vehicle.validation_issues,
-            unsupported_requests=[],
-            can_commit=ready,
+            unsupported_requests=vehicle.unsupported_requests,
+            completion_scope="PARTIAL_WITH_UNSUPPORTED_REQUESTS" if vehicle.unsupported_requests else "SUPPORTED_SCOPE_ONLY",
+            can_commit=ready and not vehicle.conflicts and not vehicle.validation_issues,
+            conflicts=vehicle.conflicts,
+            validation_issues=vehicle.validation_issues,
         )
 
     extraction = extract_local(text)
@@ -255,7 +290,7 @@ def propose_specification(text: str) -> EngineeringSpecification:
         value = values[name]
         is_derived_ratio = (
             name == "gear_ratio"
-            and extraction.evidence.get(name, "").startswith("derived from")
+            and name in extraction.derivations
         )
         source: Literal["user-provided", "derived", "missing"] = (
             "missing" if value is None else "derived" if is_derived_ratio else "user-provided"
@@ -269,8 +304,22 @@ def propose_specification(text: str) -> EngineeringSpecification:
             value=value,
             unit=unit,
             source=source,
-            evidence=extraction.evidence.get(name),
+            evidence=None if is_derived_ratio else extraction.evidence.get(name),
+            derivation=extraction.derivations.get(name),
             status=status,
+            canonical_target=f"requirements.{name}" if name not in {"pinion_teeth", "gear_teeth"} else f"components.{('pinion' if name == 'pinion_teeth' else 'gear')}.teeth",
+            source_span=_source_span(text, extraction.evidence.get(name)),
+            constraints={
+                "pinion_teeth": ["integer 8..80"], "gear_teeth": ["integer 8..120"],
+                "module_mm": ["0.5..6 mm"], "face_width_mm": ["2..60 mm"],
+                "input_torque_Nm": ["finite positive N·m"], "input_speed_rpm": ["finite positive rpm"],
+                "gear_ratio": ["derived from driven and pinion teeth or explicitly supplied; must agree with teeth"],
+            }[name],
+            affected_components={
+                "pinion_teeth": ["pinion", "gear-pair"], "gear_teeth": ["gear", "gear-pair"],
+                "module_mm": ["pinion", "gear", "gear-pair"], "face_width_mm": ["pinion", "gear", "gear-pair"],
+                "gear_ratio": ["gear-pair"], "input_torque_Nm": ["gear-pair"], "input_speed_rpm": ["gear-pair"],
+            }[name],
         ))
 
     supported_requests = []
@@ -336,6 +385,7 @@ def propose_specification(text: str) -> EngineeringSpecification:
         conflicts=conflicts,
         validation_issues=validation_issues,
         unsupported_requests=supported_requests,
+        completion_scope="PARTIAL_WITH_UNSUPPORTED_REQUESTS" if supported_requests else "SUPPORTED_SCOPE_ONLY",
         can_commit=is_supported and extraction.parsed and not conflicts and not validation_issues,
     )
 
@@ -356,4 +406,5 @@ async def extract(text: str, provider: RequirementProvider | None = None) -> Ext
         missing=missing,
         conflicts=local.conflicts,
         evidence=local.evidence,
+        derivations=local.derivations,
     )

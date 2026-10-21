@@ -33,6 +33,9 @@ class Design(BaseModel):
     assumptions: list[str]
     components: list[Component]
     status: dict[str, str]
+    source_prompt: str | None = Field(default=None, max_length=4000)
+    requirement_sources: dict[str, Literal["user-provided", "derived", "assumed", "missing"]] = Field(default_factory=dict)
+    requirement_evidence: dict[str, str] = Field(default_factory=dict)
     history: list[dict] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -44,12 +47,21 @@ class Design(BaseModel):
         expected = self.components[1].teeth / self.components[0].teeth
         if abs(expected - self.requirements.gear_ratio) > 1e-9:
             raise ValueError("Gear ratio must equal driven gear teeth divided by pinion teeth.")
+        allowed = set(Requirements.model_fields) | {"pinion_teeth", "gear_teeth"}
+        if not set(self.requirement_sources) <= allowed or not set(self.requirement_evidence) <= allowed:
+            raise ValueError("Requirement provenance contains an unsupported parameter name.")
+        for key, evidence in self.requirement_evidence.items():
+            if not evidence or not self.source_prompt or evidence not in self.source_prompt:
+                raise ValueError(f"Requirement evidence for {key} must be an exact span of the retained source prompt.")
         return self
 
 
 class EditRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     expected_revision: int | None = Field(default=None, ge=1)
+    source_prompt: str | None = Field(default=None, max_length=4000)
+    requirement_sources: dict[str, Literal["user-provided", "derived", "assumed", "missing"]] = Field(default_factory=dict)
+    requirement_evidence: dict[str, str] = Field(default_factory=dict)
     pinion_teeth: int | None = Field(default=None, ge=8, le=80)
     gear_teeth: int | None = Field(default=None, ge=8, le=120)
     input_torque_Nm: float | None = Field(default=None, gt=0)
@@ -59,8 +71,14 @@ class EditRequest(BaseModel):
 
     @model_validator(mode="after")
     def at_least_one_edit(self) -> "EditRequest":
-        if not self.model_dump(exclude_none=True, exclude={"expected_revision"}):
+        if not self.model_dump(exclude_none=True, exclude={"expected_revision", "source_prompt", "requirement_sources", "requirement_evidence"}):
             raise ValueError("At least one design field must be provided.")
+        allowed = set(Requirements.model_fields) | {"pinion_teeth", "gear_teeth"}
+        if not set(self.requirement_sources) <= allowed or not set(self.requirement_evidence) <= allowed:
+            raise ValueError("Requirement provenance contains an unsupported parameter name.")
+        for key, evidence in self.requirement_evidence.items():
+            if not evidence or not self.source_prompt or evidence not in self.source_prompt:
+                raise ValueError(f"Requirement evidence for {key} must be an exact span of source_prompt.")
         return self
 
 

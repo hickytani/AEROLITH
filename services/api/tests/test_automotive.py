@@ -36,7 +36,7 @@ def test_prompt_preserves_user_evidence_and_assumed_geometry_defaults():
 
 
 def test_vehicle_cad_components_have_distinct_valid_solids_and_expected_placement():
-    request=VehicleGenerationRequest(expected_revision=1,overall_length_mm=4200,overall_width_mm=1800,occupant_capacity=2,target_range_km=300,body_height_mm=1400,wheelbase_mm=2520,front_track_mm=1500,rear_track_mm=1480,tire_outer_diameter_mm=650,tire_width_mm=225,ground_clearance_mm=150,frame_rail_width_mm=60,frame_rail_height_mm=80,body_width_mm=1200,body_length_mm=4200,provenance={"overall_length_mm":"USER_PROVIDED","overall_width_mm":"USER_PROVIDED","target_range_km":"USER_PROVIDED","occupant_capacity":"USER_PROVIDED"},evidence={"overall_length_mm":"4.2 m long"})
+    request=VehicleGenerationRequest(expected_revision=1,overall_length_mm=4200,overall_width_mm=1800,occupant_capacity=2,target_range_km=300,body_height_mm=1400,wheelbase_mm=2520,front_track_mm=1500,rear_track_mm=1480,tire_outer_diameter_mm=650,tire_width_mm=225,ground_clearance_mm=150,frame_rail_width_mm=60,frame_rail_height_mm=80,body_width_mm=1200,body_length_mm=4200,provenance={"overall_length_mm":"USER_PROVIDED","overall_width_mm":"USER_PROVIDED","target_range_km":"USER_PROVIDED","occupant_capacity":"USER_PROVIDED"},evidence={"overall_length_mm":"4.2 m long"},source_prompt="Generate a two-seater sports car, 4.2 m long")
     design=make_vehicle_design(request,2,[])
     solids=vehicle_component_solids(design)
     assert len(solids)==27
@@ -64,7 +64,7 @@ def test_default_vehicle_envelope_matches_prompt_and_keeps_tires_visible():
 
 
 def test_vehicle_mesh_drawing_and_bom_are_real_revision_bound_artifacts(tmp_path):
-    request=VehicleGenerationRequest(expected_revision=1,overall_length_mm=4200,overall_width_mm=1800,occupant_capacity=2,target_range_km=300,body_height_mm=1400,wheelbase_mm=2520,front_track_mm=1500,rear_track_mm=1500,tire_outer_diameter_mm=650,tire_width_mm=225,ground_clearance_mm=150,frame_rail_width_mm=60,frame_rail_height_mm=80,body_width_mm=1200,body_length_mm=4200,provenance={"overall_length_mm":"USER_PROVIDED","overall_width_mm":"USER_PROVIDED","target_range_km":"USER_PROVIDED"},evidence={"overall_length_mm":"4.2 m long"})
+    request=VehicleGenerationRequest(expected_revision=1,overall_length_mm=4200,overall_width_mm=1800,occupant_capacity=2,target_range_km=300,body_height_mm=1400,wheelbase_mm=2520,front_track_mm=1500,rear_track_mm=1500,tire_outer_diameter_mm=650,tire_width_mm=225,ground_clearance_mm=150,frame_rail_width_mm=60,frame_rail_height_mm=80,body_width_mm=1200,body_length_mm=4200,provenance={"overall_length_mm":"USER_PROVIDED","overall_width_mm":"USER_PROVIDED","target_range_km":"USER_PROVIDED"},evidence={"overall_length_mm":"4.2 m long"},source_prompt="Generate a two-seater sports car, 4.2 m long")
     design=make_vehicle_design(request,3,[])
     mesh=tmp_path/"body.stl"; export_vehicle_component_stl(design,"body-envelope",mesh)
     raw=mesh.read_bytes(); assert raw[84:88] != b"\0\0\0\0"; assert len(raw)>84
@@ -82,7 +82,7 @@ def test_vehicle_shared_project_revision_artifacts_and_conflicts(tmp_path,monkey
     before=client.get("/api/v1/project").json()
     proposal=client.post("/api/v1/specifications/propose",json={"text":PROMPT}).json()
     body={item["name"]:item["value"] for item in proposal["parameters"] if item["name"] not in {"propulsion_type","propulsion_layout"}}
-    body.update(expected_revision=before["revision"],propulsion_layout="rear_motor_rear_drive")
+    body.update(expected_revision=before["revision"],propulsion_layout="rear_motor_rear_drive",source_prompt=PROMPT)
     body["provenance"]={item["name"]: ("USER_PROVIDED" if item["source"]=="user-provided" else "ASSUMED") for item in proposal["parameters"] if item["name"] not in {"occupant_capacity","propulsion_type","propulsion_layout"}}
     body["provenance"].update(occupant_capacity="USER_PROVIDED",propulsion_type="USER_PROVIDED")
     body["evidence"]={item["name"]:item["evidence"] for item in proposal["parameters"] if item["evidence"]}

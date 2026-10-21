@@ -302,7 +302,7 @@ const specificationInputs = {
   occupant_capacity: { label: 'Seating capacity', min: 1, max: 12, step: 1 },
   overall_length_mm: { label: 'Overall length', min: 1500, max: 12000, step: 10 },
   overall_width_mm: { label: 'Overall width', min: 800, max: 4000, step: 10 },
-  target_range_km: { label: 'Target range', min: 1, max: 5000, step: 1 },
+  target_range_km: { label: 'Target range', min: 1, max: 3000, step: 1 },
   body_height_mm: { label: 'Body height', min: 900, max: 3000, step: 10 },
   wheelbase_mm: { label: 'Wheelbase', min: 1000, max: 8000, step: 10 },
   front_track_mm: { label: 'Front track', min: 800, max: 3000, step: 10 },
@@ -445,13 +445,24 @@ function updateSpecificationCommitState() {
     const entered = input.value.trim() ? Number(input.value) : null;
     if (entered !== null && Number.isFinite(entered)) {
       parameter.value = entered;
-      parameter.source = unchanged ? parameter.source : 'user-provided';
-      parameter.status = unchanged ? parameter.status : 'PROPOSED';
+      parameter.source = unchanged ? parameter.initial_source : 'user-provided';
+      parameter.status = unchanged ? parameter.initial_status : 'PROPOSED';
     } else if (entered === null) {
       parameter.value = null;
       parameter.source = 'missing';
       parameter.status = 'MISSING';
     }
+    if (unchanged) {
+      parameter.evidence = parameter.initial_evidence;
+      parameter.source_span = parameter.initial_source_span;
+    } else {
+      parameter.evidence = null;
+      parameter.source_span = null;
+    }
+    const evidenceNode = input.parentElement.querySelector('.spec-evidence');
+    if (evidenceNode) evidenceNode.textContent = unchanged && parameter.evidence
+      ? `Evidence: “${parameter.evidence}”${parameter.source_span ? ` · prompt characters ${parameter.source_span.start}–${parameter.source_span.end}` : ''}`
+      : unchanged ? '' : 'Original prompt evidence cleared; this value was edited during review.';
     meta.textContent = unchanged
       ? `${parameter.source.toUpperCase()} · ${parameter.status}`
       : input.value ? 'USER EDITED · REVIEW REQUIRED' : 'MISSING · REQUIRED';
@@ -473,13 +484,12 @@ function updateSpecificationCommitState() {
   if (!button || !readiness) return;
   const ready = ['SUPPORTED_SPUR_GEAR_PAIR','SUPPORTED_ELECTRIC_VEHICLE'].includes(activeSpecification.intent)
     && activeSpecification.conflicts.length === 0
-    && activeSpecification.unsupported_requests.length === 0
     && specificationValues() !== null
     && !applying
     && !specificationCommitted;
   button.disabled = !ready;
   readiness.textContent = ready
-    ? `Complete proposal · based on project revision ${specificationRevision}. Review the values, then commit explicitly.`
+    ? `${activeSpecification.completion_scope === 'PARTIAL_WITH_UNSUPPORTED_REQUESTS' ? 'Supported geometry only; unsupported requirements remain unresolved. ' : ''}Complete proposal · based on project revision ${specificationRevision}. Review the values, then commit explicitly.`
     : !['SUPPORTED_SPUR_GEAR_PAIR','SUPPORTED_ELECTRIC_VEHICLE'].includes(activeSpecification.intent)
       ? 'No supported design can be generated from this request.'
       : activeSpecification.conflicts.length
@@ -504,6 +514,10 @@ function renderSpecification(specification) {
   parameterList.className = 'specification-parameters';
   for (const parameter of specification.parameters) {
     parameter.initial_value = parameter.value;
+    parameter.initial_source = parameter.source;
+    parameter.initial_status = parameter.status;
+    parameter.initial_evidence = parameter.evidence;
+    parameter.initial_source_span = parameter.source_span;
     const definition = specificationInputs[parameter.name];
     const row = document.createElement('label');
     row.className = `specification-parameter${parameter.status === 'INVALID' ? ' spec-invalid' : ''}`;
@@ -526,7 +540,10 @@ function renderSpecification(specification) {
       output.id = `spec-${parameter.name}`;
       row.append(output);
     }
-    if (parameter.evidence) row.append(textElement('small', `Evidence: “${parameter.evidence}”`, 'spec-evidence'));
+    if (parameter.evidence || definition) {
+      const evidence = textElement('small', parameter.evidence ? `Evidence: “${parameter.evidence}”${parameter.source_span ? ` · prompt characters ${parameter.source_span.start}–${parameter.source_span.end}` : ''}` : '', 'spec-evidence');
+      row.append(evidence);
+    }
     parameterList.append(row);
   }
   panel.append(parameterList);
@@ -614,7 +631,7 @@ async function commitSpecification() {
     try {
       const committed = await request('/project/vehicle/generate', {
         method: 'POST', headers: {'content-type':'application/json'},
-        body: JSON.stringify({...values, expected_revision:specificationRevision, provenance, evidence}),
+        body: JSON.stringify({...values, expected_revision:specificationRevision, provenance, evidence, source_prompt:activeSpecification.request}),
       });
       if (disposed) return;
       project = committed;
@@ -622,7 +639,7 @@ async function commitSpecification() {
       build();
       loadArtifacts(project.revision);
       specificationCommitted = true;
-      required('intake-result').textContent = `Reviewed EV geometry committed as revision ${project.revision}; conceptual component solids are loading. Range and safety remain unresolved.`;
+      required('intake-result').textContent = `Reviewed EV geometry committed as revision ${project.revision}; conceptual component solids are loading. ${activeSpecification.unsupported_requests.length ? 'Unsupported requested scope remains listed and was excluded.' : ''} Range and safety remain unresolved.`;
       byId('specification-commit').textContent = `Generated at revision ${project.revision}`;
       updateSpecificationCommitState();
     } catch (error) {
@@ -634,7 +651,13 @@ async function commitSpecification() {
     pinion_teeth: 'pinion', gear_teeth: 'gear', module_mm: 'module', face_width_mm: 'width',
     input_torque_Nm: 'torque', input_speed_rpm: 'speed',
   })) required(inputId).value = String(values[field]);
-  const committed = await applyChanges(values, specificationRevision);
+  const requirementSources = Object.fromEntries(activeSpecification.parameters.map((item) => [item.name, item.source]));
+  const requirementEvidence = Object.fromEntries(activeSpecification.parameters.filter((item) => item.evidence).map((item) => [item.name, item.evidence]));
+  const committed = await applyChanges(values, specificationRevision, {
+    source_prompt: activeSpecification.request,
+    requirement_sources: requirementSources,
+    requirement_evidence: requirementEvidence,
+  });
   if (committed && !disposed) {
     specificationCommitted = true;
     required('intake-result').textContent = `Reviewed proposal committed as project revision ${project.revision}. Geometry and calculations are rebuilding from that revision.`;
@@ -658,7 +681,7 @@ function fill() {
     for (const component of derived.components) {
       const row=document.createElement('div');row.className='component';row.dataset.id=component.id;
       const select=textElement('button',component.name,'component-select');select.type='button';select.dataset.id=component.id;select.setAttribute('aria-pressed',String(selectedId===component.id));
-      const meta=textElement('small',`${component.family} · ${component.dimensions.length_mm.toFixed(0)} × ${component.dimensions.width_mm.toFixed(0)} × ${component.dimensions.height_mm.toFixed(0)} mm · ${component.status}`);
+      const meta=textElement('small',`${component.family} · ${component.dimensions.length_mm.toFixed(0)} × ${component.dimensions.width_mm.toFixed(0)} × ${component.dimensions.height_mm.toFixed(0)} mm · ${component.status}${component.parameter_refs?.length ? ` · inputs: ${component.parameter_refs.join(', ')}` : ''}`);
       select.append(meta);
       const eye=textElement('button',visibilityById[component.id]===false?'Hidden':'Visible','eye');eye.type='button';eye.dataset.visibility=component.id;eye.setAttribute('aria-pressed',String(visibilityById[component.id]!==false));eye.setAttribute('aria-label',`${visibilityById[component.id]===false?'Show':'Hide'} ${component.name}`);
       row.append(select,eye);components.append(row);
@@ -786,7 +809,7 @@ async function load() {
   }
 }
 
-async function applyChanges(proposalValues = null, expectedRevision = null) {
+async function applyChanges(proposalValues = null, expectedRevision = null, requirementTrace = null) {
   if (applying || !project) return;
   applying = true;
   const previousRevision = project.revision;
@@ -804,6 +827,7 @@ async function applyChanges(proposalValues = null, expectedRevision = null) {
       input_torque_Nm: Number(required('torque').value),
       input_speed_rpm: Number(required('speed').value),
     };
+    if (requirementTrace) Object.assign(body, requirementTrace);
     body.expected_revision = expectedRevision ?? project.revision;
     const committed = await request('/project', {
       method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),

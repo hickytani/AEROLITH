@@ -255,6 +255,10 @@ test('Studio prompt intake is wired to a reviewable specification and explicit r
   assert.match(script, /request\('\/specifications\/propose'/);
   assert.match(script, /Commit reviewed values as a new revision/);
   assert.match(script, /body\.expected_revision = expectedRevision \?\? project\.revision/);
+  assert.match(script, /source_prompt:activeSpecification\.request/);
+  assert.match(script, /PARTIAL_WITH_UNSUPPORTED_REQUESTS/);
+  assert.match(script, /Original prompt evidence cleared/);
+  assert.match(script, /component\.parameter_refs/);
   assert.match(script, /generator_available \? '' : ' · no geometry generator'/);
   assert.match(style, /\.specification-review\s*\{[^}]*overflow:\s*auto/);
 });
