@@ -1,3 +1,5 @@
+import pytest
+
 from aeropkmech.intelligence import extract_local, propose_specification
 
 
@@ -34,6 +36,46 @@ def test_torque_unit_conversion_is_explicit():
     assert result.proposal.input_torque_Nm == 8
 
 
+@pytest.mark.parametrize(
+    "module,width,expected_module,expected_width",
+    [("2 mm", "12 mm", 2, 12), ("0.2 cm", "1.2 cm", 2, 12), ("0.002 m", "0.012 m", 2, 12), ("0.0787401575 in", "0.472440945 in", 2, 12)],
+)
+def test_gear_lengths_are_normalized_to_mm_and_keep_literal_evidence(module, width, expected_module, expected_width):
+    result = extract_local(f"External spur gear pair, module {module}, face width {width}")
+    assert result.proposal.module_mm == pytest.approx(expected_module, abs=1e-8)
+    assert result.proposal.face_width_mm == pytest.approx(expected_width, abs=1e-8)
+    assert result.evidence["module_mm"] == f"module {module}"
+    assert result.evidence["face_width_mm"] == f"face width {width}"
+    proposal = propose_specification(f"External spur gear pair, module {module}, face width {width}")
+    module_parameter = next(item for item in proposal.parameters if item.name == "module_mm")
+    assert module_parameter.value == pytest.approx(expected_module, abs=1e-8)
+    assert module_parameter.unit == "mm"
+    assert module_parameter.evidence == f"module {module}"
+
+
+def test_gear_length_unit_conflicts_and_unsupported_units_are_explicit():
+    conflict = extract_local("External spur gear pair, module 2 mm and module 0.3 cm")
+    assert conflict.proposal.module_mm == 2
+    assert any("Conflicting explicit values for module_mm" in item for item in conflict.conflicts)
+    unsupported = extract_local("External spur gear pair, module 0.08 ft, face width 12 mm")
+    assert unsupported.proposal.module_mm is None
+    assert any("Unsupported length unit for module_mm" in item for item in unsupported.conflicts)
+
+
+def test_pressure_angle_is_extracted_or_explicitly_defaulted_and_invalid_ranges_stay_visible():
+    implicit_units = extract_local("spur gear pair pressure angle 25")
+    assert implicit_units.proposal.pressure_angle_deg == 25
+    assert implicit_units.evidence["pressure_angle_deg"] == "pressure angle 25"
+    explicit_units = extract_local("spur gear pair pressure angle = 22.5 degrees")
+    assert explicit_units.proposal.pressure_angle_deg == 22.5
+    defaulted = propose_specification("external spur gear pair")
+    angle = next(item for item in defaulted.parameters if item.name == "pressure_angle_deg")
+    assert angle.value == 20 and angle.source == "assumed" and angle.status == "ASSUMED"
+    invalid = extract_local("spur gear pair pressure angle 35 degrees")
+    assert invalid.proposal.pressure_angle_deg is None
+    assert any("pressure_angle_deg value" in issue for issue in invalid.conflicts)
+
+
 def test_complete_spur_gear_request_produces_reviewable_connected_specification():
     prompt = (
         "Design an external spur gear pair: pinion 18 teeth and driven gear 54 teeth, "
@@ -57,6 +99,10 @@ def test_complete_spur_gear_request_produces_reviewable_connected_specification(
     assert ratio.source_span is None
     module = next(item for item in result.parameters if item.name == "module_mm")
     assert prompt[module.source_span["start"]:module.source_span["end"]] == module.evidence
+    assert module.quantity.schema_version == "1.0"
+    assert module.quantity.quantity_kind == "length"
+    assert module.quantity.canonical_unit == "mm"
+    assert module.quantity.source_span == module.source_span
     assert module.affected_components == ["pinion", "gear", "gear-pair"]
     assert {"STEP", "STL", "HTML report", "PDF report", "dimensioned gear reference layout PDF"} == set(result.supported_artifacts)
 
@@ -113,6 +159,10 @@ def test_two_seat_electric_sports_car_prompt_extracts_dimensions_and_decomposes_
     assert parameters["target_range_km"].value == 300
     assert parameters["propulsion_type"].value == "electric"
     assert parameters["overall_length_mm"].source == "user-provided"
+    assert parameters["overall_length_mm"].quantity.value == 4200
+    assert parameters["overall_length_mm"].quantity.input_value == 4.2
+    assert parameters["overall_length_mm"].quantity.input_unit == "m"
+    assert parameters["overall_length_mm"].quantity.source_span == parameters["overall_length_mm"].source_span
     ids = {item.id for item in result.components}
     assert {"frame-rail-left", "front-axle-reference", "body-envelope", "battery-pack-envelope", "traction-motor-envelope", "inverter-envelope", "reduction-drive-envelope"} <= ids
     assert {("battery-pack-envelope", "inverter-envelope")} <= {

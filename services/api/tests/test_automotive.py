@@ -102,9 +102,19 @@ def test_vehicle_shared_project_revision_artifacts_and_conflicts(tmp_path,monkey
         assert artifact.headers["x-design-revision"]==str(project["revision"])
         assert artifact.headers["x-artifact-sha256"]
         if signature: assert artifact.content.startswith(signature)
+        if path.endswith("layout.pdf"):
+            assert artifact.headers["x-generator-version"] == "vehicle-layout-drawing-0.2"
+            assert f'"project_id":"{project["id"]}"'.encode() in artifact.content
+            assert f'{project["id"]}:overall_length_mm'.encode() in artifact.content
+            assert b'"family_id":"electric_vehicle"' in artifact.content
+            assert f'"source_revision":{project["revision"]}'.encode() in artifact.content
+            assert b"CONCEPTUAL ENVELOPES ONLY" in artifact.content
     listing=client.get("/api/v1/artifacts").json()
     assert all(item["revision"]==project["revision"] and not item["stale"] for item in listing["artifacts"])
     assert all(item["dependencies"] for item in listing["artifacts"])
+    drawing_index=next(item for item in listing["artifacts"] if item["kind"]=="layout-drawing")
+    assert set(drawing_index["parameter_ids"])=={record["id"] for record in project["parameter_records"].values()}
+    assert drawing_index["design_sha256"]
     regenerated=client.post("/api/v1/project/vehicle/generate",json={**body,"expected_revision":project["revision"],"body_height_mm":1410})
     assert regenerated.status_code==200
     stale=client.get("/api/v1/artifacts").json()

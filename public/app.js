@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { loadComponentSet, MeshLoadError } from './mesh-loader.js';
 import { cameraFitPose, unionBounds } from './camera-fit.js';
+import { requestJson } from './api-client.js';
 
 const api = '/api/v1';
 const VIEWER_UNITS_PER_MM = 1;
@@ -33,21 +34,7 @@ function required(id) {
 }
 
 async function request(path, options) {
-  const result = await fetch(`${api}${path}`, options);
-  const text = await result.text();
-  let data = {};
-  try { data = text ? JSON.parse(text) : {}; } catch { data = { detail: text || 'Empty server response.' }; }
-  if (!result.ok) {
-    const detail = data.detail;
-    const message = Array.isArray(detail)
-      ? detail.map((item) => item.msg || JSON.stringify(item)).join('; ')
-      : (typeof detail === 'string' ? detail : data.error || `Request failed (${result.status}).`);
-    const error = new Error(message);
-    error.status = result.status;
-    error.data = data;
-    throw error;
-  }
-  return data;
+  return requestJson(path, options);
 }
 
 function setLoading(message, isError = false) {
@@ -337,6 +324,7 @@ const specificationInputs = {
   pinion_teeth: { label: 'Input pinion teeth', min: 8, max: 80, step: 1 },
   gear_teeth: { label: 'Driven gear teeth', min: 8, max: 120, step: 1 },
   module_mm: { label: 'Module', min: 0.5, max: 6, step: 0.1 },
+  pressure_angle_deg: { label: 'Pressure angle', min: 14, max: 30, step: 0.5 },
   face_width_mm: { label: 'Face width', min: 2, max: 60, step: 0.1 },
   input_torque_Nm: { label: 'Input torque', min: 0.000001, step: 'any' },
   input_speed_rpm: { label: 'Input speed', min: 0.000001, step: 'any' },
@@ -356,7 +344,7 @@ const specificationInputs = {
   body_width_mm: { label: 'Body envelope width', min: 800, max: 4000, step: 10 },
   body_length_mm: { label: 'Body envelope length', min: 1000, max: 12000, step: 10 },
 };
-const gearSpecificationFields = ['pinion_teeth', 'gear_teeth', 'module_mm', 'face_width_mm', 'input_torque_Nm', 'input_speed_rpm'];
+const gearSpecificationFields = ['pinion_teeth', 'gear_teeth', 'module_mm', 'pressure_angle_deg', 'face_width_mm', 'input_torque_Nm', 'input_speed_rpm'];
 const vehicleSpecificationFields = ['overall_length_mm','overall_width_mm','occupant_capacity','target_range_km','body_height_mm','wheelbase_mm','front_track_mm','rear_track_mm','tire_outer_diameter_mm','tire_width_mm','ground_clearance_mm','frame_rail_width_mm','frame_rail_height_mm','body_width_mm','body_length_mm'];
 
 function renderVehicleEditor() {
@@ -689,7 +677,7 @@ async function commitSpecification() {
     return;
   }
   for (const [field, inputId] of Object.entries({
-    pinion_teeth: 'pinion', gear_teeth: 'gear', module_mm: 'module', face_width_mm: 'width',
+    pinion_teeth: 'pinion', gear_teeth: 'gear', module_mm: 'module', pressure_angle_deg: 'pressure-angle', face_width_mm: 'width',
     input_torque_Nm: 'torque', input_speed_rpm: 'speed',
   })) required(inputId).value = String(values[field]);
   const requirementSources = Object.fromEntries(activeSpecification.parameters.map((item) => [item.name, item.source]));
@@ -727,7 +715,7 @@ function fill() {
       const eye=textElement('button',visibilityById[component.id]===false?'Hidden':'Visible','eye');eye.type='button';eye.dataset.visibility=component.id;eye.setAttribute('aria-pressed',String(visibilityById[component.id]!==false));eye.setAttribute('aria-label',`${visibilityById[component.id]===false?'Show':'Hide'} ${component.name}`);
       row.append(select,eye);components.append(row);
     }
-    for (const id of ['pinion','gear','module','width','torque','speed','apply']) { const el=byId(id); if (el) {el.hidden=true;if(el.tagName==='INPUT') el.parentElement.hidden=true;} }
+    for (const id of ['pinion','gear','module','pressure-angle','width','torque','speed','apply']) { const el=byId(id); if (el) {el.hidden=true;if(el.tagName==='INPUT') el.parentElement.hidden=true;} }
     required('intro-title').textContent='Concept EV';
     required('family-label').textContent='ELECTRIC VEHICLE · SCHEMA 1.0';
     required('stage-title').textContent='CONCEPT EV ASSEMBLY';
@@ -757,13 +745,14 @@ function fill() {
     return;
   }
   required('vehicle-editor').hidden=true;
-  for (const id of ['pinion','gear','module','width','torque','speed','apply']) { const el=byId(id); if (el) {el.hidden=false;if(el.tagName==='INPUT') el.parentElement.hidden=false;} }
+  for (const id of ['pinion','gear','module','pressure-angle','width','torque','speed','apply']) { const el=byId(id); if (el) {el.hidden=false;if(el.tagName==='INPUT') el.parentElement.hidden=false;} }
   for (const link of document.querySelectorAll('.exports > a[data-artifact]')) link.hidden=['drawing','manifest','bom'].includes(link.dataset.artifact);
   required('intro-title').textContent='Spur gear study';required('family-label').textContent='SPUR GEAR PAIR · SCHEMA 1.0';required('stage-title').textContent='ASSEMBLY VIEW';
-  required('geometry-note').textContent='EDUCATIONAL TOOTH APPROXIMATION · mm';
+  required('geometry-note').textContent=`SAMPLED INVOLUTE · ${Number(requirements.pressure_angle_deg ?? 20).toFixed(1)}° · mm`;
   required('pinion').value = project.components[0].teeth;
   required('gear').value = project.components[1].teeth;
   required('module').value = requirements.module_mm;
+  required('pressure-angle').value = requirements.pressure_angle_deg ?? 20;
   required('width').value = requirements.face_width_mm;
   required('torque').value = requirements.input_torque_Nm;
   required('speed').value = requirements.input_speed_rpm;
@@ -866,6 +855,7 @@ async function applyChanges(proposalValues = null, expectedRevision = null, requ
       pinion_teeth: Number(required('pinion').value),
       gear_teeth: Number(required('gear').value),
       module_mm: Number(required('module').value),
+      pressure_angle_deg: Number(required('pressure-angle').value),
       face_width_mm: Number(required('width').value),
       input_torque_Nm: Number(required('torque').value),
       input_speed_rpm: Number(required('speed').value),

@@ -129,7 +129,7 @@ def test_failed_implemented_check_is_not_reported_as_passed():
 def test_mixed_verification_states_never_collapse_to_overall_pass():
     verification = summarize(default_design())
     assert verification["implemented_input_checks"].state == VerificationState.PASSED
-    assert verification["polygonal_geometry"].state == VerificationState.WARNING
+    assert verification["involute_geometry"].state == VerificationState.WARNING
     assert verification["ideal_kinematics"].state == VerificationState.PARTIAL
     assert verification["tooth_strength"].state == VerificationState.UNKNOWN
     assert verification["thermal_analysis"].state == VerificationState.UNTESTED

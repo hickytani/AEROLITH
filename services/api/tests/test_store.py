@@ -19,6 +19,9 @@ def test_atomic_write_failure_preserves_last_valid_state(tmp_path, monkeypatch):
     original_bytes = store.STATE_FILE.read_bytes()
     changed = original.model_copy(deep=True)
     changed.revision = 2
+    changed.parameter_quantities = {}
+    changed.parameter_records = {}
+    changed = Design.model_validate(changed.model_dump(mode="json"))
 
     def fail_replace(_source, _destination):
         raise OSError("simulated atomic replace failure")
@@ -42,6 +45,16 @@ def test_invalid_full_candidate_is_rejected_without_overwriting(tmp_path, monkey
     with pytest.raises(store.ProjectPersistenceError):
         store.save(invalid)
     assert store.STATE_FILE.read_bytes() == original_bytes
+
+
+def test_legacy_project_without_pressure_angle_loads_as_backward_compatible_twenty_degrees(tmp_path, monkeypatch):
+    configure_store(tmp_path, monkeypatch)
+    legacy = store.default_design().model_dump(mode="json")
+    legacy["requirements"].pop("pressure_angle_deg")
+    store.STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    store.STATE_FILE.write_text(json.dumps(legacy), encoding="utf-8")
+    loaded = store.load()
+    assert loaded.requirements.pressure_angle_deg == 20
 
 
 def test_malformed_persisted_project_fails_explicitly(tmp_path, monkeypatch):

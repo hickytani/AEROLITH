@@ -1,5 +1,6 @@
 """End-to-end prompts must update canonical values and real CAD geometry."""
 import hashlib
+import math
 
 from fastapi.testclient import TestClient
 
@@ -13,7 +14,7 @@ EV_PROMPT = (
 )
 GEAR_PROMPT = (
     "Design an external spur gear pair with pinion 20 teeth, driven gear 60 teeth, "
-    "module 2 mm, face width 12 mm, input torque 8 Nm, and input speed 900 rpm."
+    "module 2 mm, pressure angle 25 degrees, face width 12 mm, input torque 8 Nm, and input speed 900 rpm."
 )
 
 
@@ -34,6 +35,9 @@ def test_gear_prompt_review_acceptance_regenerates_real_revision_bound_cad(tmp_p
     assert proposal_response.status_code == 200
     proposal = proposal_response.json()
     assert proposal["can_commit"] is True
+    pressure_parameter = next(item for item in proposal["parameters"] if item["name"] == "pressure_angle_deg")
+    assert pressure_parameter["value"] == 25 and pressure_parameter["source"] == "user-provided"
+    assert pressure_parameter["evidence"] == "pressure angle 25 degrees"
     assert proposal["request"] == GEAR_PROMPT
     assert client.get("/api/v1/project").json() == initial
 
@@ -41,7 +45,7 @@ def test_gear_prompt_review_acceptance_regenerates_real_revision_bound_cad(tmp_p
     evidence = {item["name"]: item["evidence"] for item in proposal["parameters"] if item["evidence"]}
     sources = {item["name"]: item["source"] for item in proposal["parameters"]}
     accepted = client.patch("/api/v1/project", json={
-        **{name: values[name] for name in ("pinion_teeth", "gear_teeth", "module_mm", "face_width_mm", "input_torque_Nm", "input_speed_rpm")},
+        **{name: values[name] for name in ("pinion_teeth", "gear_teeth", "module_mm", "pressure_angle_deg", "face_width_mm", "input_torque_Nm", "input_speed_rpm")},
         "expected_revision": initial["revision"], "source_prompt": GEAR_PROMPT,
         "requirement_sources": sources, "requirement_evidence": evidence,
     })
@@ -52,16 +56,20 @@ def test_gear_prompt_review_acceptance_regenerates_real_revision_bound_cad(tmp_p
     assert project["components"][0]["teeth"] == 20
     assert project["components"][1]["teeth"] == 60
     assert project["derived"]["center_distance_mm"] == 80
+    assert project["requirements"]["pressure_angle_deg"] == 25
+    assert "25° pressure angle" in project["assumptions"][0]
+    assert math.isclose(project["derived"]["pinion_base_diameter_mm"], 40 * math.cos(math.radians(25)), rel_tol=0, abs_tol=1e-12)
     assembly = project["assembly_verification"]
     assert assembly["revision"] == assembly["geometry_revision"] == project["revision"]
     assert assembly["source_prompt_sha256"]
     assert assembly["requirements"]["module_mm"]["source_span"]["text"] == "module 2 mm"
     assert next(check for check in assembly["checks"] if check["id"] == "gear.profile-dimensions")["state"] == "PASSED"
+    assert next(check for check in assembly["checks"] if check["id"] == "gear.base-circles")["state"] == "PASSED"
     assert next(check for check in assembly["checks"] if check["id"] == "gear.tooth-contact")["state"] == "UNOBSERVABLE"
 
     trace = project["requirement_traceability"]
     assert trace["source_prompt"] == GEAR_PROMPT
-    assert trace["components"]["pinion"] == ["pinion_teeth", "module_mm", "face_width_mm"]
+    assert trace["components"]["pinion"] == ["pinion_teeth", "module_mm", "face_width_mm", "pressure_angle_deg"]
     module_span = trace["parameters"]["module_mm"]["source_span"]
     assert GEAR_PROMPT[module_span["start"]:module_span["end"]] == "module 2 mm"
     assert project["requirement_traceability"]["parameters"]["pinion_teeth"]["value"] == 20
@@ -81,7 +89,7 @@ def test_gear_prompt_review_acceptance_regenerates_real_revision_bound_cad(tmp_p
     step = client.get("/api/v1/export/step")
     assert step.status_code == 200 and step.content.startswith(b"ISO-10303-21;")
     assert step.headers["x-design-revision"] == str(project["revision"])
-    assert project["verification"]["polygonal_geometry"]["state"] == "WARNING"
+    assert project["verification"]["involute_geometry"]["state"] == "WARNING"
 
 
 def test_ev_prompt_review_acceptance_regenerates_traceable_concept_assembly(tmp_path, monkeypatch):

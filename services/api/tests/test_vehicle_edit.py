@@ -130,6 +130,10 @@ def test_revision_is_rechecked_after_candidate_cad_generation(client,monkeypatch
         latest=store.load()
         latest.revision+=1
         latest.requirements.wheelbase_mm.value=2600
+        latest.parameter_quantities={}
+        latest.parameter_records={}
+        from aeropkmech.automotive import VehicleDesign
+        latest=VehicleDesign.model_validate(latest.model_dump(mode="json"))
         store.save(latest)
         return original(candidate)
     monkeypatch.setattr(main,"vehicle_verification",concurrent_write)
@@ -166,6 +170,9 @@ def test_equivalent_inputs_generate_equivalent_cad_and_step_reopens(client,tmp_p
     equivalent=store.load().model_copy(deep=True)
     equivalent.revision+=1
     equivalent.updated_at="later-revision"
+    equivalent.parameter_records={}
+    from aeropkmech.automotive import VehicleDesign
+    equivalent=VehicleDesign.model_validate(equivalent.model_dump(mode="json"))
     repeated=vehicle_component_solids(equivalent)
     assert set(first)==set(repeated)
     for component_id in first:

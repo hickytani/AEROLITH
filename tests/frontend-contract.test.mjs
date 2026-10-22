@@ -7,6 +7,46 @@ import { copyText, listOpenApiOperations } from '../apps/web/app/lib/platform.mj
 import { loadComponentMesh, loadComponentSet, MeshLoadError, validateMeshGeometry } from '../public/mesh-loader.js';
 import { cameraFitPose, unionBounds } from '../public/camera-fit.js';
 import { waitForApiReady } from '../scripts/api-readiness.mjs';
+import { requestJson } from '../public/api-client.js';
+
+test('Studio API client gives actionable guidance when the API connection is unavailable', async () => {
+  await assert.rejects(
+    requestJson('/project', {}, async () => { throw new TypeError('Failed to fetch'); }),
+    (error) => error.code === 'API_UNREACHABLE'
+      && /local API is running at 127\.0\.0\.1:8000/.test(error.message)
+      && /\/project/.test(error.message),
+  );
+});
+
+test('Studio API client preserves bounded API error details and status codes', async () => {
+  await assert.rejects(
+    requestJson('/project', {}, async () => Response.json({ detail: 'CAD kernel unavailable.' }, { status: 503 })),
+    (error) => error.status === 503 && error.message === 'CAD kernel unavailable.',
+  );
+});
+
+test('Studio API client does not surface non-JSON server bodies or traceback details', async () => {
+  await assert.rejects(
+    requestJson('/project', {}, async () => new Response('<pre>Traceback: SECRET_TOKEN=abc</pre>', { status: 500 })),
+    (error) => error.status === 500 && !error.message.includes('SECRET_TOKEN') && !error.message.includes('Traceback'),
+  );
+  await assert.rejects(
+    requestJson('/project', {}, async () => Response.json({ detail: 'Traceback (most recent call last): SECRET_TOKEN=abc' }, { status: 500 })),
+    (error) => error.status === 500 && !error.message.includes('SECRET_TOKEN') && !error.message.includes('Traceback'),
+  );
+});
+
+test('Studio API client identifies malformed successful responses without echoing their body', async () => {
+  await assert.rejects(
+    requestJson('/project', {}, async () => new Response('<html>internal server error</html>', { status: 200 })),
+    (error) => error.code === 'INVALID_API_RESPONSE' && error.status === 200 && !error.message.includes('<html>'),
+  );
+});
+
+test('Next.js proxies the Studio API client module to FastAPI', async () => {
+  const config = await readFile(new URL('../apps/web/next.config.mjs', import.meta.url), 'utf8');
+  assert.match(config, /source:\s*'\/api-client\.js',\s*destination:\s*`\$\{api\}\/api-client\.js`/);
+});
 
 function tetrahedronStl() {
   const triangles = [

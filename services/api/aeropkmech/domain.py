@@ -5,6 +5,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .contracts import ParameterRecord, build_parameter_records, validate_parameter_records
+from .quantities import EngineeringQuantity, QuantityKind, quantity_from_canonical
+
 
 class Requirements(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
@@ -13,6 +16,7 @@ class Requirements(BaseModel):
     input_speed_rpm: float = Field(gt=0)
     module_mm: float = Field(ge=0.5, le=6)
     face_width_mm: float = Field(ge=2, le=60)
+    pressure_angle_deg: float = Field(default=20, ge=14, le=30)
 
 
 class Component(BaseModel):
@@ -36,6 +40,8 @@ class Design(BaseModel):
     source_prompt: str | None = Field(default=None, max_length=4000)
     requirement_sources: dict[str, Literal["user-provided", "derived", "assumed", "missing"]] = Field(default_factory=dict)
     requirement_evidence: dict[str, str] = Field(default_factory=dict)
+    parameter_quantities: dict[str, EngineeringQuantity] = Field(default_factory=dict)
+    parameter_records: dict[str, ParameterRecord] = Field(default_factory=dict)
     history: list[dict] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -53,6 +59,51 @@ class Design(BaseModel):
         for key, evidence in self.requirement_evidence.items():
             if not evidence or not self.source_prompt or evidence not in self.source_prompt:
                 raise ValueError(f"Requirement evidence for {key} must be an exact span of the retained source prompt.")
+        quantity_specs: dict[str, tuple[float, str, QuantityKind, float | None, float | None]] = {
+            "pinion_teeth": (self.components[0].teeth, "teeth", "count", 8, 80),
+            "gear_teeth": (self.components[1].teeth, "teeth", "count", 8, 120),
+            "gear_ratio": (self.requirements.gear_ratio, "ratio", "ratio", 0, None),
+            "input_torque_Nm": (self.requirements.input_torque_Nm, "N·m", "torque", 0, None),
+            "input_speed_rpm": (self.requirements.input_speed_rpm, "rpm", "rotational_speed", 0, None),
+            "module_mm": (self.requirements.module_mm, "mm", "length", 0.5, 6),
+            "face_width_mm": (self.requirements.face_width_mm, "mm", "length", 2, 60),
+            "pressure_angle_deg": (self.requirements.pressure_angle_deg, "deg", "angle", 14, 30),
+        }
+        expected_quantities = {}
+        for name, (value, unit, kind, minimum, maximum) in quantity_specs.items():
+            source = self.requirement_sources.get(name, "derived" if name == "gear_ratio" else "assumed")
+            evidence = self.requirement_evidence.get(name)
+            span = None
+            if evidence and self.source_prompt:
+                start = self.source_prompt.find(evidence)
+                if start >= 0:
+                    span = {"start": start, "end": start + len(evidence), "text": evidence}
+            expected_quantities[name] = quantity_from_canonical(
+                value, unit, kind, source, evidence=evidence, source_span=span,
+                derivation="gear_teeth / pinion_teeth" if name == "gear_ratio" and source == "derived" else None,
+                minimum=minimum, maximum=maximum,
+            )
+        if not self.parameter_quantities:
+            self.parameter_quantities = expected_quantities
+        else:
+            if set(self.parameter_quantities) != set(expected_quantities):
+                raise ValueError("Persisted parameter quantity map is incomplete or contains unknown fields.")
+            for name, expected in expected_quantities.items():
+                saved = self.parameter_quantities[name]
+                if (saved.value != expected.value or saved.canonical_unit != expected.canonical_unit
+                    or saved.quantity_kind != expected.quantity_kind or saved.source != expected.source
+                    or saved.evidence != expected.evidence or saved.source_span != expected.source_span):
+                    raise ValueError(f"Persisted quantity contract for {name} does not match canonical design state.")
+        expected_records = build_parameter_records(
+            project_id=self.id, family_id=self.family, revision=self.revision,
+            quantities=expected_quantities, component_ids={item.id for item in self.components},
+            component_paths={"pinion_teeth": ["pinion"], "gear_teeth": ["gear"]},
+            derivations={"gear_ratio": ["gear_teeth", "pinion_teeth"]},
+        )
+        if not self.parameter_records:
+            self.parameter_records = expected_records
+        else:
+            validate_parameter_records(self.parameter_records, expected_records)
         return self
 
 
@@ -68,6 +119,7 @@ class EditRequest(BaseModel):
     input_speed_rpm: float | None = Field(default=None, gt=0)
     module_mm: float | None = Field(default=None, ge=0.5, le=6)
     face_width_mm: float | None = Field(default=None, ge=2, le=60)
+    pressure_angle_deg: float | None = Field(default=None, ge=14, le=30)
 
     @model_validator(mode="after")
     def at_least_one_edit(self) -> "EditRequest":

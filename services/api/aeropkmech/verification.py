@@ -40,7 +40,7 @@ def summarize(design: Design) -> dict[str, VerificationItem]:
             summary=(
                 "The design fails one or more implemented input-consistency checks; this does not calculate mechanical failure."
                 if issues
-                else "Scope: implemented schema and ratio consistency checks, calculated ideal kinematics, and educational polygon CAD status. Mechanical performance is not verified; this is not a safety finding."
+                else "Scope: implemented schema and ratio consistency checks, calculated ideal kinematics, and sampled involute CAD status. Mechanical performance is not verified; this is not a safety finding."
             ),
             evidence=(
                 issues
@@ -54,10 +54,10 @@ def summarize(design: Design) -> dict[str, VerificationItem]:
             summary="Ideal lossless ratio, speed, and torque relationships are calculated; losses and performance criteria are excluded.",
             evidence=["No efficiency, load rating, or acceptance threshold is modeled."],
         ),
-        "polygonal_geometry": VerificationItem(
+        "involute_geometry": VerificationItem(
             state=VerificationState.WARNING,
-            summary="Educational polygon-tooth geometry; valid solid construction does not establish correct tooth engagement.",
-            evidence=["Not an involute profile; no contact, interference, or manufacturing checks."],
+            summary="Sampled mathematical involute flanks with an approximate straight radial root connector; valid solid construction does not establish correct tooth engagement.",
+            evidence=["Spline-interpolated flanks; no contact, interference, strength, or manufacturing checks."],
         ),
         "tooth_strength": VerificationItem(
             state=VerificationState.UNKNOWN,
@@ -66,8 +66,8 @@ def summarize(design: Design) -> dict[str, VerificationItem]:
         ),
         "tooth_contact": VerificationItem(
             state=VerificationState.UNKNOWN,
-            summary="Contact path and conjugate motion cannot be established from the polygonal tooth approximation.",
-            evidence=["No involute profile, pressure angle, contact ratio, backlash, or interference analysis is implemented."],
+            summary="The profile uses involute flanks, but contact path, conjugate motion and interference have not been verified.",
+            evidence=["Pressure angle is a geometry input; no contact ratio, backlash, or interference analysis is implemented."],
         ),
         "thermal_analysis": VerificationItem(
             state=VerificationState.UNTESTED,

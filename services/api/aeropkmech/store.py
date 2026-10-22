@@ -40,9 +40,11 @@ def default_design() -> Design:
             input_speed_rpm=900,
             module_mm=2,
             face_width_mm=12,
+            pressure_angle_deg=20,
         ),
         assumptions=[
-            "Educational external spur-gear pair; polygonal tooth proportions.",
+            "Ordinary unshifted external spur gears; sampled involute flanks at 20° pressure angle.",
+            "Addendum m, dedendum 1.25m, zero nominal backlash, and a straight radial root connector below the base circle; not a cutter-generated trochoid.",
             "Illustrative equal bore size derived from module and the smaller root diameter; user bore/shaft requirements are not modeled.",
             "Ideal lossless power transmission for output speed and torque; strength and thermal capacity are not assessed.",
         ],
@@ -84,6 +86,12 @@ def save_if_revision(design: Design, expected_revision: int) -> None:
         current=load()
         if current.revision!=expected_revision:
             raise ProjectRevisionConflict(expected_revision,current.revision)
+        if design.revision != expected_revision + 1:
+            raise ProjectPersistenceError(
+                f"Conditional project commits must advance exactly one revision from {expected_revision}."
+            )
+        if design.id != current.id:
+            raise ProjectPersistenceError("Conditional commits must preserve the active project identity.")
         _save_locked(design)
 
 

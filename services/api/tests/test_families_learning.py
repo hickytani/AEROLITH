@@ -1,3 +1,5 @@
+import math
+
 from fastapi.testclient import TestClient
 import pytest
 
@@ -16,9 +18,10 @@ def test_spur_gear_family_is_registered_and_version_checked():
     families = list_families()
     assert [family.id for family in families] == ["spur_gear_pair", "electric_vehicle"]
     assert families[0].schema_version == "1.0"
-    assert "educational polygonal CAD" in families[0].capabilities
+    assert "sampled mathematical involute CAD" in families[0].capabilities
     assert {item["type"] for item in families[0].exporters} == {"step", "stl", "html", "pdf"}
-    assert any("tooth strength/contact: UNKNOWN" in item for item in families[0].verification_checks)
+    assert any("tooth contact: UNOBSERVABLE" in item for item in families[0].verification_checks)
+    assert any("tooth strength: UNKNOWN" in item for item in families[0].verification_checks)
     assert families[1].schema_version == "1.0"
     assert "layout drawing PDF" in families[1].capabilities
     with pytest.raises(UnsupportedDesignFamily, match="not implemented"):
@@ -87,7 +90,7 @@ def test_learning_experiment_uses_shared_core_without_mutating_project(tmp_path,
     original = client.get("/api/v1/project").json()
     result = client.post("/api/v1/learn/spur-gear/experiment", json={
         "pinion_teeth": 12, "gear_teeth": 30, "module_mm": 2,
-        "face_width_mm": 12, "input_torque_Nm": 8, "input_speed_rpm": 900,
+        "face_width_mm": 12, "pressure_angle_deg": 25, "input_torque_Nm": 8, "input_speed_rpm": 900,
     })
     assert result.status_code == 200
     data = result.json()
@@ -95,6 +98,8 @@ def test_learning_experiment_uses_shared_core_without_mutating_project(tmp_path,
     assert data["derived"]["center_distance_mm"] == 42
     assert data["derived"]["output_speed_rpm"] == 360
     assert data["derived"]["ideal_output_torque_Nm"] == 20
+    assert data["derived"]["pressure_angle_deg"] == 25
+    assert math.isclose(data["derived"]["pinion_base_diameter_mm"], 24 * math.cos(math.radians(25)), rel_tol=0, abs_tol=1e-12)
     assert data["calculations"]["provenance"]["design_revision"] is None
     assert data["calculations"]["provenance"]["source_revision"] == original["revision"]
     assert client.get("/api/v1/project").json() == original

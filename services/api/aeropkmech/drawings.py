@@ -1,6 +1,7 @@
 """Revision-bound reference drawing for the supported educational gear pair."""
 from __future__ import annotations
 
+import json
 from io import BytesIO
 
 from reportlab.lib import colors
@@ -10,7 +11,7 @@ from reportlab.pdfgen import canvas
 from .domain import Design
 from .engineering import derive
 
-GEAR_DRAWING_VERSION = "gear-reference-drawing-0.1"
+GEAR_DRAWING_VERSION = "gear-reference-drawing-0.3"
 
 
 def _arrow(c: canvas.Canvas, x: float, y: float, direction: int) -> None:
@@ -38,6 +39,34 @@ def gear_pair_reference_pdf(design: Design) -> bytes:
     c = canvas.Canvas(buffer, pagesize=(page_w, page_h), pageCompression=0)
     c.setTitle(f"{GEAR_DRAWING_VERSION} · Gear pair reference drawing {design.id} revision {design.revision}")
     c.setAuthor("AeroPKmech Studio")
+    parameter_trace = {
+        key: {
+            "id": record.id,
+            "value": record.quantity.value,
+            "unit": record.quantity.canonical_unit,
+            "source": record.quantity.source,
+            "evidence": record.quantity.evidence,
+            "source_parameter_ids": record.source_parameter_ids,
+        }
+        for key, record in sorted(design.parameter_records.items())
+    }
+    trace_metadata = {
+        "project_id": design.id,
+        "family_id": design.family,
+        "family_schema_version": design.schema_version,
+        "source_revision": design.revision,
+        "component_ids": [component.id for component in design.components],
+        "parameters": parameter_trace,
+        "dimension_semantics": {
+            "pitch_diameter": "calculated reference circle",
+            "addendum_diameter": "calculated nominal reference circle",
+            "face_width": "accepted parameter; axial envelope view",
+            "bore": "illustrative assumption",
+        },
+        "limitations": "NOT FOR MANUFACTURE; sampled involute spline with radial root connector; no contact, interference, strength, fit, tolerance, or manufacturing validation",
+    }
+    c.setSubject(json.dumps(trace_metadata, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
+    c.setKeywords(f"project:{design.id}, family:{design.family}, schema:{design.schema_version}, revision:{design.revision}, components:pinion,gear, units:mm")
 
     ink = colors.HexColor("#203443")
     muted = colors.HexColor("#536675")
@@ -47,13 +76,13 @@ def gear_pair_reference_pdf(design: Design) -> bytes:
     c.drawString(34, page_h - 36, "SPUR GEAR PAIR — REFERENCE LAYOUT")
     c.setFont("Helvetica", 8)
     c.setFillColor(muted)
-    c.drawString(34, page_h - 51, f"Design {design.id} · revision {design.revision} · units: mm · drawing {GEAR_DRAWING_VERSION}")
+    c.drawString(34, page_h - 51, f"Project {design.id} · {design.family}@{design.schema_version} · revision {design.revision} · units: mm · drawing {GEAR_DRAWING_VERSION}")
     c.setFillColor(colors.HexColor("#8d291e"))
     c.setFont("Helvetica-Bold", 9)
     c.drawRightString(page_w - 34, page_h - 36, "NOT FOR MANUFACTURE")
 
-    # Front view: circles are nominal references. The CAD tooth boundary is a
-    # phased polygon approximation and intentionally is not represented as an involute.
+    # Front view: circles are nominal references. This drawing does not show the
+    # phase-dependent sampled CAD tooth silhouette.
     scale = 1.35
     center_y = 337.0
     left_x = 185.0
@@ -128,10 +157,13 @@ def gear_pair_reference_pdf(design: Design) -> bytes:
     c.setFont("Helvetica", 8)
     c.setFillColor(muted)
     c.drawString(34, 117, f"Module m = {design.requirements.module_mm:.3f} mm   ·   Ratio i = {d['gear_ratio']:.5g}:1   ·   Bore = {d['bore_diameter_mm']:.2f} mm (illustrative assumption)")
-    c.drawString(34, 103, f"Input speed = {design.requirements.input_speed_rpm:.2f} rpm   ·   Input torque = {design.requirements.input_torque_Nm:.3f} N·m   ·   geometry = cq-polygon-approx-0.1")
+    c.drawString(34, 103, f"Input speed = {design.requirements.input_speed_rpm:.2f} rpm   ·   Input torque = {design.requirements.input_torque_Nm:.3f} N·m   ·   pressure angle = {design.requirements.pressure_angle_deg:.1f}°")
+    c.setFont("Helvetica", 6.4)
+    c.setFillColor(muted)
+    c.drawString(34, 91, "Trace IDs: " + " · ".join(f"{record.path}={record.id}" for record in design.parameter_records.values() if record.path in {"pinion_teeth", "gear_teeth", "module_mm", "face_width_mm", "pressure_angle_deg"}))
     c.setFillColor(colors.HexColor("#8d291e"))
     c.setFont("Helvetica-Bold", 7.5)
-    c.drawString(34, 79, "EDUCATIONAL REFERENCE ONLY. CAD teeth are polygonal, not involute. This sheet does not establish engagement, clearances, strength, fit, tolerances, or manufacturing suitability.")
+    c.drawString(34, 79, "REFERENCE ONLY. Sampled involute flanks; straight radial root connector, not a cutter trochoid. No contact, clearance, strength, fit, tolerance or manufacturing validation.")
     c.setFillColor(muted)
     c.setFont("Helvetica", 7)
     c.drawRightString(page_w - 34, 42, f"Revision {design.revision} · all dimensions mm unless stated · page 1 of 1")

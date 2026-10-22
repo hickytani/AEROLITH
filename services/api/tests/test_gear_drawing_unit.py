@@ -26,6 +26,10 @@ def test_gear_reference_pdf_is_a_single_landscape_revision_sheet():
     assert b"/Count 1" in pdf
     assert GEAR_DRAWING_VERSION.encode("ascii") in pdf
     assert b"NOT FOR MANUFACTURE" in pdf
+    assert b"REFERENCE ONLY." in pdf
     assert b"pitch-center reference" in pdf
-    assert b"EDUCATIONAL REFERENCE ONLY" in pdf
+    assert b"module_mm=demo-gearbox:module_mm" in pdf
+    assert b"pinion_teeth=demo-gearbox:pinion_teeth" in pdf
+    assert b"/Subject" in pdf
+    assert b'"source_revision":7' in pdf
     assert len(pdf) > 1500

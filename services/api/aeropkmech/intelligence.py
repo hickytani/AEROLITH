@@ -10,7 +10,9 @@ import re
 from typing import Literal
 from typing import Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+
+from .quantities import EngineeringQuantity, QuantityKind, convert_quantity, quantity_from_canonical
 
 
 class ProposedRequirements(BaseModel):
@@ -22,6 +24,7 @@ class ProposedRequirements(BaseModel):
     input_speed_rpm: float | None = Field(default=None, gt=0)
     module_mm: float | None = Field(default=None, ge=0.5, le=6)
     face_width_mm: float | None = Field(default=None, ge=2, le=60)
+    pressure_angle_deg: float | None = Field(default=20, ge=14, le=30)
 
 
 class Extraction(BaseModel):
@@ -50,6 +53,74 @@ class SpecificationParameter(BaseModel):
     source_span: dict[str, int | str] | None = None
     constraints: list[str] = Field(default_factory=list)
     affected_components: list[str] = Field(default_factory=list)
+    quantity: EngineeringQuantity | None = None
+
+    @model_validator(mode="after")
+    def add_versioned_quantity(self):
+        kind_bounds: dict[str, tuple[QuantityKind, float | None, float | None]] = {
+            "pinion_teeth": ("count", 8, 80), "gear_teeth": ("count", 8, 120),
+            "gear_ratio": ("ratio", 0, None), "input_torque_Nm": ("torque", 0, None),
+            "input_speed_rpm": ("rotational_speed", 0, None), "module_mm": ("length", 0.5, 6),
+            "face_width_mm": ("length", 2, 60), "pressure_angle_deg": ("angle", 14, 30),
+            "occupant_capacity": ("count", 1, 12), "overall_length_mm": ("length", 0, None),
+            "overall_width_mm": ("length", 0, None), "target_range_km": ("range", 0, None),
+            "body_height_mm": ("length", 0, None), "wheelbase_mm": ("length", 0, None),
+            "front_track_mm": ("length", 0, None), "rear_track_mm": ("length", 0, None),
+            "tire_outer_diameter_mm": ("length", 0, None), "tire_width_mm": ("length", 0, None),
+            "ground_clearance_mm": ("length", 0, None), "frame_rail_width_mm": ("length", 0, None),
+            "frame_rail_height_mm": ("length", 0, None), "body_width_mm": ("length", 0, None),
+            "body_length_mm": ("length", 0, None),
+        }
+        definition = kind_bounds.get(self.name)
+        if definition is None or self.value is None or not isinstance(self.value, (int, float)) or isinstance(self.value, bool):
+            if self.quantity is not None:
+                raise ValueError("Only numeric engineering parameters can carry a quantity contract.")
+            return self
+        kind, minimum, maximum = definition
+        if self.quantity is None:
+            self.quantity = quantity_from_canonical(
+                self.value, self.unit, kind, self.source, evidence=self.evidence,
+                source_span=self.source_span, derivation=self.derivation,
+                minimum=minimum, maximum=maximum,
+            )
+        elif (self.quantity.value != self.value or self.quantity.canonical_unit != self.unit
+              or self.quantity.source != self.source or self.quantity.quantity_kind != kind):
+            raise ValueError("Quantity contract does not match the parameter value, unit, kind, or source.")
+        return self
+    quantity: EngineeringQuantity | None = None
+
+    @model_validator(mode="after")
+    def validate_quantity_envelope(self):
+        kinds: dict[str, tuple[QuantityKind, float | None, float | None]] = {
+            "pinion_teeth": ("count", 8, 80), "gear_teeth": ("count", 8, 120),
+            "gear_ratio": ("ratio", 0, None), "input_torque_Nm": ("torque", 0, None),
+            "input_speed_rpm": ("rotational_speed", 0, None), "module_mm": ("length", 0.5, 6),
+            "face_width_mm": ("length", 2, 60), "pressure_angle_deg": ("angle", 14, 30),
+            "occupant_capacity": ("count", 1, 12), "overall_length_mm": ("length", 0, None),
+            "overall_width_mm": ("length", 0, None), "target_range_km": ("range", 0, None),
+            "body_height_mm": ("length", 0, None), "wheelbase_mm": ("length", 0, None),
+            "front_track_mm": ("length", 0, None), "rear_track_mm": ("length", 0, None),
+            "tire_outer_diameter_mm": ("length", 0, None), "tire_width_mm": ("length", 0, None),
+            "ground_clearance_mm": ("length", 0, None), "frame_rail_width_mm": ("length", 0, None),
+            "frame_rail_height_mm": ("length", 0, None), "body_width_mm": ("length", 0, None),
+            "body_length_mm": ("length", 0, None),
+        }
+        spec = kinds.get(self.name)
+        if spec is None or not isinstance(self.value, (int, float)) or isinstance(self.value, bool):
+            if self.quantity is not None:
+                raise ValueError("Only a numeric engineering parameter can carry a quantity contract.")
+            return self
+        kind, minimum, maximum = spec
+        if self.quantity is None:
+            self.quantity = quantity_from_canonical(
+                self.value, self.unit, kind, self.source, evidence=self.evidence,
+                source_span=self.source_span, derivation=self.derivation,
+                minimum=minimum, maximum=maximum,
+            )
+        elif (self.quantity.value != self.value or self.quantity.canonical_unit != self.unit
+              or self.quantity.source != self.source or self.quantity.quantity_kind != kind):
+            raise ValueError("Quantity contract must match the parameter's canonical value, unit, kind, and source.")
+        return self
 
 
 class SpecificationComponent(BaseModel):
@@ -109,6 +180,29 @@ class NoModelProvider:
     """Placeholder injection boundary; intentionally makes no network call."""
 
 
+def _extract_length_mm(text: str, label_pattern: str) -> tuple[float | None, list[float], list[str], str | None]:
+    """Normalize explicit module/width lengths to mm while retaining source text."""
+    expression = re.compile(
+        rf"{label_pattern}\s*(?:of|is|=|:)?\s*(\d+(?:\.\d+)?)\s*([a-zA-Z]+)\b",
+        re.IGNORECASE,
+    )
+    matches = list(expression.finditer(text))
+    normalized: list[float] = []
+    unsupported: list[str] = []
+    literal: str | None = None
+    for match in matches:
+        evidence = match.group(0)
+        try:
+            value, _, _ = convert_quantity(float(match.group(1)), match.group(2), "length")
+        except ValueError:
+            unsupported.append(evidence)
+            continue
+        normalized.append(value)
+        if literal is None:
+            literal = evidence
+    return (normalized[0] if normalized else None), normalized, unsupported, literal
+
+
 def _match(pattern: str, text: str, group: int = 1) -> tuple[str | None, str | None]:
     found = re.search(pattern, text, flags=re.IGNORECASE)
     if not found:
@@ -134,11 +228,11 @@ def extract_local(text: str) -> Extraction:
 
     tooth_patterns = {
         "pinion_teeth": [
-            r"(?:pinion|driver)\s*(?:teeth|tooth)?\s*(?:=|:|is)?\s*(\d+)\s*(?:teeth|tooth)?\b",
+            r"(?:pinion|driver)\s*(?:of\s*)?(?:teeth|tooth)?\s*(?:=|:|is|of)?\s*(\d+)\s*(?:teeth|tooth)?\b",
             r"(\d+)\s*(?:teeth|tooth)\s*(?:pinion|driver)\b",
         ],
         "gear_teeth": [
-            r"(?:driven\s+)?gear\s*(?:teeth|tooth)?\s*(?:=|:|is)?\s*(\d+)\s*(?:teeth|tooth)?\b",
+            r"(?:driven\s+)?gear\s*(?:of\s*)?(?:teeth|tooth)?\s*(?:=|:|is|of)?\s*(\d+)\s*(?:teeth|tooth)?\b",
             r"(\d+)\s*(?:teeth|tooth)\s+(?:driven\s+)?gear\b",
         ],
     }
@@ -159,25 +253,34 @@ def extract_local(text: str) -> Extraction:
     patterns = {
         "gear_ratio": (r"(?:gear\s+)?ratio\s*(?:of|is|=|:)?\s*(\d+(?:\.\d+)?)\s*(?::\s*1)?\b", float),
         "input_torque_Nm": (r"(?:input\s+)?torque\s*(?:of|is|=|:)?\s*(\d+(?:\.\d+)?)\s*(N\s*mm|N\s*[·.]?\s*m|Nm)\b", float),
-        "input_speed_rpm": (r"(?:input\s+)?speed\s*(?:of|is|=|:)?\s*(\d+(?:\.\d+)?)\s*rpm\b", float),
-        "module_mm": (r"module\s*(?:of|is|=|:)?\s*(\d+(?:\.\d+)?)\s*mm\b", float),
-        "face_width_mm": (r"(?:face\s+width|width)\s*(?:of|is|=|:)?\s*(\d+(?:\.\d+)?)\s*mm\b", float),
+        "input_speed_rpm": (r"(?:(?:input\s+)?speed\s*(?:of|is|=|:)?|\bat)\s*(\d+(?:\.\d+)?)\s*rpm\b", float),
+        "pressure_angle_deg": (r"pressure\s+angle\s*(?:of|is|=|:)?\s*(\d+(?:\.\d+)?)\s*(?:degrees?|deg|°)?(?!\w)(?!\s*(?:mm|radians?|rad)\b)", float),
     }
     for key, (pattern, convert) in patterns.items():
         matches = list(re.finditer(pattern, text, flags=re.IGNORECASE))
         if not matches:
-            fields[key] = None
+            fields[key] = 20.0 if key == "pressure_angle_deg" else None
         else:
             parsed = []
             for match in matches:
                 value = convert(match.group(1))
-                if key == "input_torque_Nm" and re.search(r"N\s*mm\b", match.group(0), re.IGNORECASE):
-                    value = float(value) / 1000
+                if key == "input_torque_Nm":
+                    value, _, _ = convert_quantity(value, match.group(2), "torque")
                 parsed.append(value)
             fields[key] = parsed[0]
             evidence[key] = matches[0].group(0)
             if any(abs(value - parsed[0]) > 1e-9 for value in parsed[1:]):
                 conflicts.append(f"Conflicting explicit values for {key}: " + "; ".join(match.group(0) for match in matches))
+
+    for key, label_pattern in (("module_mm", r"module"), ("face_width_mm", r"(?:face\s+width|width)")):
+        value, normalized, unsupported_units, literal = _extract_length_mm(text, label_pattern)
+        fields[key] = value
+        if literal:
+            evidence[key] = literal
+        if unsupported_units:
+            conflicts.append(f"Unsupported length unit for {key}: " + "; ".join(unsupported_units))
+        if len(normalized) > 1 and any(abs(item - normalized[0]) > 1e-9 for item in normalized[1:]):
+            conflicts.append(f"Conflicting explicit values for {key} after conversion to mm.")
 
     if fields["pinion_teeth"] and fields["gear_teeth"]:
         ratio_from_teeth = fields["gear_teeth"] / fields["pinion_teeth"]
@@ -218,6 +321,7 @@ _PARAMETER_INFO = {
     "gear_ratio": ("Driven-to-input tooth ratio", "ratio"),
     "module_mm": ("Gear module", "mm"),
     "face_width_mm": ("Face width", "mm"),
+    "pressure_angle_deg": ("Pressure angle", "deg"),
     "input_torque_Nm": ("Input torque", "N·m"),
     "input_speed_rpm": ("Input rotational speed", "rpm"),
 }
@@ -244,6 +348,7 @@ def propose_specification(text: str) -> EngineeringSpecification:
             unit=parameter.unit,
             source=parameter.source,
             evidence=parameter.evidence,
+            quantity=parameter.quantity,
             status=parameter.status,
             canonical_target=parameter.canonical_target,
             source_span=parameter.source_span,
@@ -292,11 +397,12 @@ def propose_specification(text: str) -> EngineeringSpecification:
             name == "gear_ratio"
             and name in extraction.derivations
         )
-        source: Literal["user-provided", "derived", "missing"] = (
-            "missing" if value is None else "derived" if is_derived_ratio else "user-provided"
+        assumed_pressure = name == "pressure_angle_deg" and name not in extraction.evidence
+        source: Literal["user-provided", "derived", "assumed", "missing"] = (
+            "missing" if value is None else "assumed" if assumed_pressure else "derived" if is_derived_ratio else "user-provided"
         )
-        status: Literal["PROPOSED", "DERIVED", "MISSING", "INVALID"] = (
-            "INVALID" if name in invalid_fields else "MISSING" if value is None else "DERIVED" if is_derived_ratio else "PROPOSED"
+        status: Literal["PROPOSED", "DERIVED", "ASSUMED", "MISSING", "INVALID"] = (
+            "INVALID" if name in invalid_fields else "MISSING" if value is None else "ASSUMED" if assumed_pressure else "DERIVED" if is_derived_ratio else "PROPOSED"
         )
         parameters.append(SpecificationParameter(
             name=name,
@@ -312,12 +418,14 @@ def propose_specification(text: str) -> EngineeringSpecification:
             constraints={
                 "pinion_teeth": ["integer 8..80"], "gear_teeth": ["integer 8..120"],
                 "module_mm": ["0.5..6 mm"], "face_width_mm": ["2..60 mm"],
+                "pressure_angle_deg": ["14..30 degrees; defaults to 20 degrees when omitted"],
                 "input_torque_Nm": ["finite positive N·m"], "input_speed_rpm": ["finite positive rpm"],
                 "gear_ratio": ["derived from driven and pinion teeth or explicitly supplied; must agree with teeth"],
             }[name],
             affected_components={
                 "pinion_teeth": ["pinion", "gear-pair"], "gear_teeth": ["gear", "gear-pair"],
                 "module_mm": ["pinion", "gear", "gear-pair"], "face_width_mm": ["pinion", "gear", "gear-pair"],
+                "pressure_angle_deg": ["pinion", "gear", "gear-pair"],
                 "gear_ratio": ["gear-pair"], "input_torque_Nm": ["gear-pair"], "input_speed_rpm": ["gear-pair"],
             }[name],
         ))
@@ -334,18 +442,18 @@ def propose_specification(text: str) -> EngineeringSpecification:
             SpecificationComponent(
                 id="gear-pair", name="External spur gear pair", kind="assembly",
                 parent_id=None, role="Top-level mechanical assembly",
-                parameter_refs=["pinion_teeth", "gear_teeth", "module_mm", "face_width_mm"],
+                parameter_refs=["pinion_teeth", "gear_teeth", "module_mm", "face_width_mm", "pressure_angle_deg"],
                 generator_available=True,
             ),
-            SpecificationComponent(id="pinion", name="Pinion", parent_id="gear-pair", role="Input driver", parameter_refs=["pinion_teeth", "module_mm", "face_width_mm"]),
-            SpecificationComponent(id="gear", name="Driven gear", parent_id="gear-pair", role="Output driven member", parameter_refs=["gear_teeth", "module_mm", "face_width_mm"]),
+            SpecificationComponent(id="pinion", name="Pinion", parent_id="gear-pair", role="Input driver", parameter_refs=["pinion_teeth", "module_mm", "face_width_mm", "pressure_angle_deg"]),
+            SpecificationComponent(id="gear", name="Driven gear", parent_id="gear-pair", role="Output driven member", parameter_refs=["gear_teeth", "module_mm", "face_width_mm", "pressure_angle_deg"]),
         ]
         connections = [SpecificationConnection(
             id="external-gear-mesh",
             source_component="pinion",
             target_component="gear",
             relationship="external_gear_mesh",
-            parameter_refs=["pinion_teeth", "gear_teeth", "module_mm"],
+            parameter_refs=["pinion_teeth", "gear_teeth", "module_mm", "pressure_angle_deg"],
             status="PROPOSED" if not extraction.missing else "NEEDS_INPUT",
         )]
         artifacts = ["STEP", "STL", "HTML report", "PDF report", "dimensioned gear reference layout PDF"]
@@ -357,7 +465,8 @@ def propose_specification(text: str) -> EngineeringSpecification:
     ]
     assumptions = [
         "The supported family represents one external spur gear pair; no larger vehicle, gearbox, or machine assembly is inferred.",
-        "A generated polygonal tooth approximation is educational geometry, not a verified involute or manufacturing profile.",
+        "The gear uses sampled involute flanks at the requested pressure angle; omitted pressure angle defaults to an assumed 20 degrees.",
+        "The straight radial root connector is not a cutter trochoid, and the sampled profile is not a manufacturing-ready gear profile.",
         "Ideal kinematic calculations do not establish strength, fatigue life, interference-free engagement, thermal performance, safety, or standards compliance.",
         "No material, tolerance, shaft fit, losses, or service environment is assumed by the parser.",
     ] if is_supported else [
@@ -378,7 +487,7 @@ def propose_specification(text: str) -> EngineeringSpecification:
         supported_artifacts=artifacts,
         assumptions=assumptions,
         limitations=[
-            "CAD geometry is an educational polygonal tooth approximation, not involute or manufacturing-ready.",
+            "CAD uses sampled involute flanks with a straight radial root connector; the profile is not manufacturing-ready.",
             "Strength, fatigue, thermal, safety, material, fit, and interference analyses are unsupported.",
         ] if is_supported else ["No supported generator is available for the classified request."],
         unresolved_questions=unresolved,

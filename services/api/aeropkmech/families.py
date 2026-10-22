@@ -50,11 +50,12 @@ class SpurGearPairFamily:
             {"name": "gear_teeth", "unit": "teeth", "minimum": 8, "maximum": 120},
             {"name": "module_mm", "unit": "mm", "minimum": 0.5, "maximum": 6},
             {"name": "face_width_mm", "unit": "mm", "minimum": 2, "maximum": 60},
+            {"name": "pressure_angle_deg", "unit": "deg", "minimum": 14, "maximum": 30, "default": 20},
             {"name": "input_torque_Nm", "unit": "N·m", "minimum_exclusive": 0},
             {"name": "input_speed_rpm", "unit": "rpm", "minimum_exclusive": 0},
         ),
-        capabilities=("typed parameter validation", "ideal ratio and kinematics", "educational polygonal CAD", "STEP/STL, reports, and reference drawing"),
-        limitations=("not involute", "no tooth-contact or interference analysis", "no strength, fatigue, thermal, or safety rating", "single local project store"),
+        capabilities=("typed parameter validation", "ideal ratio and kinematics", "sampled mathematical involute CAD", "STEP/STL, reports, and reference drawing"),
+        limitations=("straight radial root connector, not a generated cutter trochoid", "no tooth-contact or interference analysis", "no strength, fatigue, thermal, or safety rating", "single local project store"),
         artifacts=("step", "stl", "html", "pdf"),
         exporters=(
             {"type": "step", "implementation": "aeropkmech.cad.export_step"},
@@ -62,7 +63,7 @@ class SpurGearPairFamily:
             {"type": "html", "implementation": "aeropkmech.main.report"},
             {"type": "pdf", "implementation": "aeropkmech.main.report_pdf"},
         ),
-        verification_checks=("implemented input consistency", "ideal kinematics: PARTIAL", "polygonal CAD: WARNING", "tooth strength/contact: UNKNOWN", "thermal: UNTESTED", "service conditions: UNOBSERVABLE"),
+        verification_checks=("implemented input consistency", "involute profile dimensions: WARNING (sampled flank/root transition approximation)", "ideal kinematics: PARTIAL", "tooth contact: UNOBSERVABLE", "tooth strength: UNKNOWN", "thermal: UNTESTED", "service conditions: UNOBSERVABLE"),
     )
 
     def default_design(self) -> Design:
@@ -153,6 +154,7 @@ class GearExperimentRequest(BaseModel):
     gear_teeth: int = Field(default=54, ge=8, le=120)
     module_mm: float = Field(default=2, ge=0.5, le=6)
     face_width_mm: float = Field(default=12, ge=2, le=60)
+    pressure_angle_deg: float = Field(default=20, ge=14, le=30)
     input_torque_Nm: float = Field(default=8, gt=0)
     input_speed_rpm: float = Field(default=900, gt=0)
 

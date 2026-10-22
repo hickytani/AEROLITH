@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import hashlib
+import json
 import re
 import uuid
 from functools import lru_cache
@@ -16,11 +17,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-import cadquery as cq
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from .contracts import ParameterRecord, build_parameter_records, validate_parameter_records
+from .quantities import EngineeringQuantity, QuantityKind, quantity_from_canonical
 
 VEHICLE_CAD_LOCK = RLock()
 VEHICLE_GENERATOR_VERSION = "cq-ev-envelope-0.2"
+VEHICLE_DRAWING_VERSION = "vehicle-layout-drawing-0.2"
 
 
 class SourcedValue(BaseModel):
@@ -88,7 +92,59 @@ class VehicleDesign(BaseModel):
     assumptions: list[str]
     status: dict[str, str]
     source_prompt: str | None = Field(default=None, max_length=4000)
+    parameter_quantities: dict[str, EngineeringQuantity] = Field(default_factory=dict)
+    parameter_records: dict[str, ParameterRecord] = Field(default_factory=dict)
     history: list[dict] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def migrate_and_validate_quantities(self):
+        specs: dict[str, tuple[float, str, QuantityKind, str, str | None]] = {}
+        for name in VehicleParameters.model_fields:
+            value = getattr(self.requirements, name)
+            if isinstance(value, SourcedValue):
+                kind: QuantityKind = "range" if name == "target_range_km" else "length"
+                specs[name] = (value.value, value.unit, kind, value.source.lower().replace("_", "-"), value.evidence)
+        specs["occupant_capacity"] = (
+            float(self.requirements.occupant_capacity), "persons", "count",
+            self.requirements.occupant_source.lower().replace("_", "-"), self.requirements.occupant_evidence,
+        )
+        expected: dict[str, EngineeringQuantity] = {}
+        for name, (value, unit, kind, source, evidence) in specs.items():
+            span = None
+            if evidence and self.source_prompt:
+                start = self.source_prompt.find(evidence)
+                if start >= 0:
+                    span = {"start": start, "end": start + len(evidence), "text": evidence}
+            expected[name] = quantity_from_canonical(
+                value, unit, kind, source, evidence=evidence, source_span=span,
+            )
+        if not self.parameter_quantities:
+            self.parameter_quantities = expected
+        else:
+            if set(self.parameter_quantities) != set(expected):
+                raise ValueError("EV parameter quantity map is incomplete or contains unknown fields.")
+            for name, current in expected.items():
+                saved = self.parameter_quantities[name]
+                if (saved.value != current.value or saved.canonical_unit != current.canonical_unit
+                    or saved.quantity_kind != current.quantity_kind or saved.source != current.source
+                    or saved.evidence != current.evidence or saved.source_span != current.source_span):
+                    raise ValueError(f"Persisted quantity contract for EV parameter {name} is inconsistent.")
+        dependencies = globals().get("VEHICLE_COMPONENT_PARAMETER_DEPENDENCIES", {})
+        related: dict[str, list[str]] = {name: [] for name in expected}
+        for component_id, refs in dependencies.items():
+            for name in refs:
+                if name in related:
+                    related[name].append(component_id)
+        expected_records = build_parameter_records(
+            project_id=self.id, family_id=self.family, revision=self.revision,
+            quantities=expected, component_ids=set(globals().get("COMPONENT_INFO", {})),
+            component_paths=related,
+        )
+        if not self.parameter_records:
+            self.parameter_records = expected_records
+        else:
+            validate_parameter_records(self.parameter_records, expected_records)
+        return self
 
 
 class VehicleGenerationRequest(BaseModel):
@@ -203,6 +259,29 @@ class VehiclePromptParameter(BaseModel):
     source_span: dict[str, int | str] | None = None
     constraints: list[str] = Field(default_factory=list)
     affected_components: list[str] = Field(default_factory=list)
+    quantity: EngineeringQuantity | None = None
+
+    @model_validator(mode="after")
+    def add_versioned_quantity(self):
+        kinds: dict[str, QuantityKind] = {
+            "occupant_capacity": "count", "overall_length_mm": "length", "overall_width_mm": "length",
+            "target_range_km": "range", "body_height_mm": "length", "wheelbase_mm": "length",
+            "front_track_mm": "length", "rear_track_mm": "length", "tire_outer_diameter_mm": "length",
+            "tire_width_mm": "length", "ground_clearance_mm": "length", "frame_rail_width_mm": "length",
+            "frame_rail_height_mm": "length", "body_width_mm": "length", "body_length_mm": "length",
+        }
+        kind = kinds.get(self.name)
+        if kind is None or self.value is None or not isinstance(self.value, (int, float)) or isinstance(self.value, bool):
+            return self
+        if self.quantity is None:
+            self.quantity = quantity_from_canonical(
+                self.value, self.unit, kind, self.source, evidence=self.evidence,
+                source_span=self.source_span,
+            )
+        elif (self.quantity.value != self.value or self.quantity.canonical_unit != self.unit
+              or self.quantity.source != self.source or self.quantity.quantity_kind != kind):
+            raise ValueError("Vehicle quantity contract does not match its canonical parameter.")
+        return self
 
 
 class VehiclePromptNode(BaseModel):
@@ -349,6 +428,14 @@ def propose_electric_vehicle(text: str) -> VehicleConcept:
             conflicts.append(f"Conflicting explicit values for {name}: " + "; ".join(item.group(0) for item in founds))
         specs.append(VehiclePromptParameter(name=name,meaning=names[name],value=captured,unit="mm",source="user-provided" if found else "assumed",evidence=found.group(0) if found else None,status="PROPOSED" if found else "ASSUMED"))
         numeric[name]=captured
+    for parameter in specs:
+        if parameter.evidence:
+            start = text.find(parameter.evidence)
+            if start >= 0:
+                span = {"start": start, "end": start + len(parameter.evidence), "text": parameter.evidence}
+                parameter.source_span = span
+                if parameter.quantity is not None:
+                    parameter.quantity.source_span = span
     specs.append(VehiclePromptParameter(name="propulsion_layout",meaning="Propulsion layout",value="rear_motor_rear_drive",unit="",source="assumed",evidence=None,status="ASSUMED"))
     numeric["propulsion_layout"]="rear_motor_rear_drive"
     issues=[]
@@ -418,10 +505,12 @@ def propose_electric_vehicle(text: str) -> VehicleConcept:
 
 
 def _box_center(length: float, width: float, height: float, center: tuple[float, float, float]) -> cq.Workplane:
+    import cadquery as cq
     return cq.Workplane("XY").box(length, width, height).translate(center)
 
 
 def _wheel_ring(outer_d: float, width: float, inner_d: float) -> cq.Workplane:
+    import cadquery as cq
     # Ring axis starts on local Z then rotates to the vehicle's lateral Y axis.
     ring = cq.Workplane("XY").circle(outer_d / 2).circle(inner_d / 2).extrude(width / 2, both=True)
     return ring.rotate((0, 0, 0), (1, 0, 0), 90)
@@ -429,6 +518,7 @@ def _wheel_ring(outer_d: float, width: float, inner_d: float) -> cq.Workplane:
 
 @lru_cache(maxsize=3)
 def _vehicle_component_solids_cached(design_json: str) -> dict[str, cq.Workplane]:
+    import cadquery as cq
     design = VehicleDesign.model_validate_json(design_json)
     p = design.requirements
     length, width = p.overall_length_mm.value, p.overall_width_mm.value
@@ -563,9 +653,15 @@ def vehicle_requirement_trace(design: VehicleDesign, name: str) -> dict:
         field = getattr(p, name)
         trace={"canonical_target": f"requirements.{name}", "value": field.value, "unit": field.unit, "source": field.source.lower().replace("_", "-"), "evidence": field.evidence}
     evidence=trace["evidence"]
+    quantity = design.parameter_quantities.get(name)
+    if quantity is not None:
+        trace["quantity"] = quantity.model_dump(mode="json")
     if evidence and design.source_prompt:
         start=design.source_prompt.find(evidence)
-        if start>=0: trace["source_span"]={"start":start,"end":start+len(evidence),"text":evidence}
+        if start>=0:
+            trace["source_span"]={"start":start,"end":start+len(evidence),"text":evidence}
+            if quantity is not None:
+                trace["quantity"]["source_span"] = trace["source_span"]
     return trace
 
 
@@ -746,6 +842,8 @@ def propagate_vehicle_edits(design: VehicleDesign, changes: dict[str, float]) ->
     candidate.revision=design.revision+1
     candidate.updated_at=datetime.now(timezone.utc).isoformat()
     candidate.history=[*design.history,{"revision":design.revision,"changed_at":design.updated_at,"design":design.model_dump(mode="json")}]
+    candidate.parameter_quantities = {}
+    candidate.parameter_records = {}
     candidate=VehicleDesign.model_validate(candidate.model_dump(mode="json"))
     return candidate,propagated
 
@@ -765,6 +863,7 @@ def export_vehicle_stl(design: VehicleDesign, target: Path) -> None:
 
 
 def build_vehicle_assembly(design: VehicleDesign) -> cq.Assembly:
+    import cadquery as cq
     assembly = cq.Assembly(name=f"electric_vehicle_r{design.revision}")
     for component_id, solid in vehicle_component_solids(design).items():
         assembly.add(solid, name=component_id, color=cq.Color(0.08,0.48,0.62) if "tire" not in component_id else cq.Color(0.16,0.18,0.2))
@@ -789,8 +888,30 @@ def export_vehicle_drawing_pdf(design: VehicleDesign, target: Path) -> None:
 
     p = design.requirements
     page_w, page_h = landscape(A3)
-    c = canvas.Canvas(str(target), pagesize=(page_w,page_h), pageCompression=1)
-    c.setTitle(f"AeroPKmech EV layout R{design.revision}")
+    c = canvas.Canvas(str(target), pagesize=(page_w,page_h), pageCompression=0)
+    c.setTitle(f"AeroPKmech EV layout {VEHICLE_DRAWING_VERSION} R{design.revision}")
+    c.setAuthor("AeroPKmech Studio")
+    c.setSubject(json.dumps({
+        "project_id": design.id,
+        "family_id": design.family,
+        "family_schema_version": design.schema_version,
+        "source_revision": design.revision,
+        "units": "mm",
+        "component_ids": sorted(COMPONENT_INFO),
+        "parameter_records": {
+            key: {
+                "id": record.id,
+                "value": record.quantity.value,
+                "unit": record.quantity.canonical_unit,
+                "source": record.quantity.source,
+                "evidence": record.quantity.evidence,
+            }
+            for key, record in sorted(design.parameter_records.items())
+        },
+        "dimension_semantics": "Conceptual package/envelope projections; source-tagged inputs or assumptions, not validated interfaces or manufacturing dimensions.",
+        "limitations": "No mass, range/power sizing, structural, crash, thermal, safety, regulatory, fit, or manufacturing validation.",
+    }, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
+    c.setKeywords(f"project:{design.id}, family:{design.family}, schema:{design.schema_version}, revision:{design.revision}, conceptual packaging, units:mm")
     c.setFont("Helvetica-Bold",18); c.drawString(36,page_h-40,"Concept EV packaging layout")
     c.setFont("Helvetica",10); c.drawString(36,page_h-58,f"Design {design.id} · revision {design.revision} · all dimensions mm · scale 1:20")
     scale=0.05

@@ -36,6 +36,14 @@ def _read_index(index: Path) -> dict:
         and re.fullmatch(r"[0-9a-f]{64}", str(item.get("sha256", ""))) is not None
         and isinstance(item.get("generator_version"), str)
         and isinstance(item.get("created_at"), str)
+        and ("project_id" not in item or isinstance(item.get("project_id"), str))
+        and ("family_id" not in item or isinstance(item.get("family_id"), str))
+        and ("design_schema_version" not in item or isinstance(item.get("design_schema_version"), str))
+        and ("parameter_ids" not in item or (
+            isinstance(item.get("parameter_ids"), list)
+            and all(isinstance(value, str) and value for value in item["parameter_ids"])
+            and len(item["parameter_ids"]) == len(set(item["parameter_ids"]))
+        ))
     )
     if (
         not isinstance(data, dict)
@@ -68,7 +76,11 @@ def publish(data: bytes, directory: Path, design: Design, kind: str, extension: 
         "artifact_id": f"{kind}:r{design.revision}:{digest[:16]}",
         "kind": kind,
         "filename": filename,
+        "project_id": design.id,
+        "family_id": design.family,
+        "design_schema_version": design.schema_version,
         "revision": design.revision,
+        "parameter_ids": sorted(record.id for record in design.parameter_records.values()),
         "design_sha256": hashlib.sha256(design.model_dump_json().encode("utf-8")).hexdigest(),
         "sha256": digest,
         "generator_version": generator_version,

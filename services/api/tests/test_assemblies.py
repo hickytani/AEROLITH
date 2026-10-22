@@ -28,6 +28,15 @@ def test_gear_assembly_inspects_real_solids_transform_and_revision():
     assert ratio.observed["source"] == "gear_teeth / pinion_teeth"
     contact = next(item for item in evidence.checks if item.id == "gear.tooth-contact")
     assert contact.state == "UNOBSERVABLE"
+    profile = next(item for item in evidence.checks if item.id == "gear.profile-dimensions")
+    assert profile.state == "PASSED"
+    assert profile.version == evidence.check_version
+    assert profile.revision == profile.geometry_revision == design.revision
+    assert profile.units == "mm, rad" and profile.tolerance == pytest.approx(1e-6)
+    assert profile.expected["pinion"]["base_radius_mm"] == pytest.approx(16.9144671741465, abs=1e-12)
+    assert profile.observed["pinion"]["observed_root_radius_mm"] == pytest.approx(15.5, abs=0.01)
+    assert profile.observed["pinion"]["observed_tip_radius_mm"] == pytest.approx(20, abs=0.01)
+    assert profile.observed["pinion"]["maximum_involute_angular_residual_rad"] <= profile.tolerance
     assert evidence.overall_state == "PARTIAL"
 
 
@@ -45,6 +54,26 @@ def test_gear_relationship_violation_in_generated_assembly_is_detected(monkeypat
     center = next(item for item in evidence["checks"] if item["id"] == "gear.center-distance")
     assert center["state"] == "FAILED"
     assert center["observed"]["distance_mm"] == pytest.approx(center["expected"]["distance_mm"] + 10)
+
+
+def test_changed_tooth_profile_in_actual_cad_is_detected(monkeypatch):
+    design = get_family("spur_gear_pair").default_design()
+    real = cad.build_assembly(design)
+    corrupted = cq.Assembly(name="deliberately-wrong-tooth-count")
+    for child in real.children:
+        shape = child.obj
+        if child.name == "pinion":
+            shape = cad.gear_solid(12, design.requirements.module_mm, design.requirements.face_width_mm, 4, design.requirements.pressure_angle_deg)
+        translation, rotation = child.loc.toTuple()
+        corrupted.add(shape, name=child.name, loc=cq.Location(cq.Vector(*translation), cq.Vector(0, 0, 1), rotation[2]))
+    from aeropkmech import assemblies
+    assemblies._cached_gear_assembly.cache_clear()
+    monkeypatch.setattr(cad, "build_assembly", lambda _design: corrupted)
+    evidence = build_assembly_evidence(design)
+    profile = next(item for item in evidence["checks"] if item["id"] == "gear.profile-dimensions")
+    assert profile["state"] == "FAILED"
+    assert profile["observed"]["pinion"]["accepted_tooth_count"] == 18
+    assert profile["observed"]["pinion"]["observed_tip_radius_mm"] != pytest.approx(profile["expected"]["pinion"]["tip_radius_mm"], abs=0.01)
 
 
 def test_ev_relationships_check_real_wheel_stack_frame_and_crossmember_geometry():

@@ -24,10 +24,11 @@ def test_revision_geometry_exports_and_requirement_intake(tmp_path, monkeypatch)
     assert initial["derived"]["output_speed_rpm"] == 300
     assert initial["derived"]["ideal_output_torque_Nm"] == 24
 
-    text = "18 teeth pinion, 54 teeth driven gear, module 2 mm, face width 12 mm, torque 8 Nm, speed 900 rpm"
+    text = "18 teeth pinion, 54 teeth driven gear, module 2 mm, pressure angle 25 degrees, face width 12 mm, torque 8 Nm, speed 900 rpm"
     proposal = client.post("/api/v1/project/interpret", json={"text": text}).json()
     assert proposal["parsed"] is True
     assert proposal["proposal"]["gear_ratio"] == 3
+    assert proposal["proposal"]["pressure_angle_deg"] == 25
     assert client.get("/api/v1/project").json() == initial  # proposals do not mutate canonical state
 
     edited = client.patch("/api/v1/project", json={"gear_teeth": 72}).json()
@@ -36,7 +37,7 @@ def test_revision_geometry_exports_and_requirement_intake(tmp_path, monkeypatch)
     assert edited["history"][0]["revision"] == 1
     assert edited["verification"]["tooth_strength"]["state"] == "UNKNOWN"
     assert edited["verification"]["ideal_kinematics"]["state"] == "PARTIAL"
-    assert edited["verification"]["polygonal_geometry"]["state"] == "WARNING"
+    assert edited["verification"]["involute_geometry"]["state"] == "WARNING"
     assert edited["verification"]["overall"]["state"] == "PARTIAL"
     assert "not a safety finding" in edited["verification"]["overall"]["summary"]
     assert client.patch("/api/v1/project", json={"module_mm": 0}).status_code == 422
@@ -59,9 +60,9 @@ def test_revision_geometry_exports_and_requirement_intake(tmp_path, monkeypatch)
     stl = client.get("/api/v1/export/stl")
     assert stl.status_code == 200
     assert stl.headers["x-design-revision"] == "2"
-    assert stl.headers["x-generator-version"] == "cq-polygon-approx-0.1"
+    assert stl.headers["x-generator-version"] == "cq-involute-spline-profile-0.3"
     assert stl.headers["x-artifact-stale"] == "false"
-    assert "r2-cq-polygon-approx-0.1" in stl.headers["content-disposition"]
+    assert "r2-cq-involute-spline-profile-0.3" in stl.headers["content-disposition"]
     assert len(stl.content) > 84
     step = client.get("/api/v1/export/step")
     assert step.status_code == 200

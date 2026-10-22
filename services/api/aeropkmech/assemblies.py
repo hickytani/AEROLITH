@@ -37,7 +37,7 @@ class AssemblyRelationship(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str
     kind: Literal[
-        "nominal-pitch-center-placement", "common-axial-width", "parallel-coaxial-axes", "polygon-profile-dimensions", "tooth-contact",
+        "nominal-pitch-center-placement", "common-axial-width", "parallel-coaxial-axes", "sampled-involute-profile", "tooth-contact",
         "concentric-packaging-stack", "mirrored-frame-rails", "crossmember-rail-geometric-overlap",
         "wheel-axle-reference-placement", "axle-reference-placement", "component-completeness-and-solid-validity",
         "packaging-association", "declared-envelope-containment",
@@ -199,7 +199,7 @@ def _gear_assembly(design: Design) -> AssemblyEvidence:
         shape = child.obj
         component_rows.append(AssemblyComponent(
             id=component_id, parent_id="gear-pair",
-            parameter_refs=["pinion_teeth" if component_id == "pinion" else "gear_teeth", "module_mm", "face_width_mm"],
+            parameter_refs=["pinion_teeth" if component_id == "pinion" else "gear_teeth", "module_mm", "face_width_mm", "pressure_angle_deg"],
             placement={"kind":"assembly_transform","translation_mm":tuple(float(v) for v in translation),"rotation_euler_deg":tuple(float(v) for v in rotation)},
             bounds_mm=_dims(shape), geometry_valid=bool(shape.val().isValid()),
             volume_mm3=float(shape.val().Volume()),
@@ -225,18 +225,57 @@ def _gear_assembly(design: Design) -> AssemblyEvidence:
     solids_ok = all(row.geometry_valid and math.isfinite(row.volume_mm3) and row.volume_mm3 > 0 for row in component_rows)
     profile_measurements = {}
     profile_ok = True
+    base_circle_measurements = {}
+    base_circles_ok = True
     for child, component in ((pinion,p),(gear,g)):
         root = req.module_mm * (component.teeth - 2.5) / 2
         tip = req.module_mm * (component.teeth + 2) / 2
-        radii = [math.hypot(vertex.Center().x, vertex.Center().y) for vertex in child.obj.val().Vertices()]
-        root_count = sum(math.isclose(value,root,rel_tol=0,abs_tol=0.01) for value in radii)
-        tip_count = sum(math.isclose(value,tip,rel_tol=0,abs_tol=0.01) for value in radii)
-        matched = root_count >= component.teeth * 4 and tip_count >= component.teeth * 4
+        pressure = math.radians(req.pressure_angle_deg)
+        pitch_radius = req.module_mm * component.teeth / 2
+        base_radius = pitch_radius * math.cos(pressure)
+        flank_start = max(base_radius, root)
+        values = [(vertex.Center().x, vertex.Center().y) for vertex in child.obj.val().Vertices()]
+        radii = [math.hypot(x,y) for x,y in values]
+        exterior_radii = [radius for radius in radii if radius > derived["bore_diameter_mm"] / 2 + 0.01]
+        root_observed = min(exterior_radii)
+        tip_observed = max(exterior_radii)
+        start_vertices = [radius for radius in exterior_radii if math.isclose(radius, flank_start, rel_tol=0, abs_tol=1e-6)]
+        pitch_angle = 2 * math.pi / component.teeth
+        inv_pressure = math.tan(pressure) - pressure
+        flank_residuals = []
+        sampled_flank_edges = 0
+        for edge in child.obj.val().Edges():
+            edge_residuals = []
+            for sample in range(1, 20):
+                point = edge.positionAt(sample / 20)
+                radius = math.hypot(point.x, point.y)
+                if flank_start + 1e-4 < radius < tip - 0.01:
+                    alpha = math.acos(min(1.0, base_radius / radius))
+                    half_width = math.pi / (2 * component.teeth) + math.tan(alpha) - alpha - inv_pressure
+                    angle = math.atan2(point.y, point.x) % pitch_angle
+                    edge_residuals.append(min(abs(angle-half_width), abs(angle-(pitch_angle-half_width))))
+            # Root/tip arcs and radial connectors do not have enough active
+            # flank samples to count as an involute edge.
+            if len(edge_residuals) >= 10:
+                sampled_flank_edges += 1
+                flank_residuals.extend(edge_residuals)
+        max_flank_residual = max(flank_residuals, default=math.inf)
+        matched = (
+            math.isclose(root_observed, root, rel_tol=0, abs_tol=0.01)
+            and math.isclose(tip_observed, tip, rel_tol=0, abs_tol=0.01)
+            and len(start_vertices) >= 2 * component.teeth
+            and sampled_flank_edges >= component.teeth * 4
+            and len(flank_residuals) >= component.teeth * 4 * 15
+            and max_flank_residual <= 1e-6
+        )
         profile_ok &= matched
-        profile_measurements[component.id]={"accepted_tooth_count":component.teeth,"expected_root_radius_mm":root,"observed_root_vertices":root_count,"expected_tip_radius_mm":tip,"observed_tip_vertices":tip_count}
+        base_circles_ok &= len(start_vertices) >= 2 * component.teeth
+        profile_measurements[component.id]={"accepted_tooth_count":component.teeth,"expected_root_radius_mm":root,"observed_root_radius_mm":root_observed,"expected_tip_radius_mm":tip,"observed_tip_radius_mm":tip_observed,"sampled_involute_flank_edge_count":sampled_flank_edges,"sampled_involute_profile_points":len(flank_residuals),"maximum_involute_angular_residual_rad":max_flank_residual}
+        base_circle_measurements[component.id]={"expected_base_radius_mm":base_radius,"observed_profile_start_radius_mm":min(start_vertices, default=None),"expected_profile_start_radius_mm":flank_start,"observed_profile_start_vertex_count":len(start_vertices)}
     ratio = g.teeth / p.teeth
     gear_values = {**design.requirements.model_dump(), "pinion_teeth":p.teeth,"gear_teeth":g.teeth}
     gear_units = {"pinion_teeth":"teeth","gear_teeth":"teeth","gear_ratio":"ratio","module_mm":"mm","face_width_mm":"mm","input_torque_Nm":"N·m","input_speed_rpm":"rpm"}
+    gear_units["pressure_angle_deg"] = "deg"
     requirements = {name:{"canonical_target":f"requirements.{name}" if name not in {"pinion_teeth","gear_teeth"} else f"components.{name.removesuffix('_teeth')}.teeth","value":value,"unit":gear_units[name],"source":design.requirement_sources.get(name,"derived" if name=="gear_ratio" else "assumed"),"evidence":design.requirement_evidence.get(name)} for name,value in gear_values.items()}
     for trace in requirements.values():
         evidence = trace["evidence"]
@@ -256,18 +295,19 @@ def _gear_assembly(design: Design) -> AssemblyEvidence:
             AssemblyRelationship(id="gear-pair.center-distance", kind="nominal-pitch-center-placement", component_ids=["pinion", "gear"], parameter_refs=["pinion_teeth", "gear_teeth", "module_mm"], description="CAD component origins are placed at the nominal external-pair pitch-center distance.", verification_state=VerificationState.PASSED if center_ok else VerificationState.FAILED),
             AssemblyRelationship(id="gear-pair.common-face-width", kind="common-axial-width", component_ids=["pinion", "gear"], parameter_refs=["face_width_mm"], description="Both generated solids use the accepted shared face width.", verification_state=VerificationState.PASSED if widths_ok else VerificationState.FAILED),
             AssemblyRelationship(id="gear-pair.parallel-axes", kind="parallel-coaxial-axes", component_ids=["pinion", "gear"], parameter_refs=["module_mm", "pinion_teeth", "gear_teeth"], description="Both gear axes remain parallel to the assembly Z axis; centerline separation is in XY.", verification_state=VerificationState.PASSED if axes_ok else VerificationState.FAILED),
-            AssemblyRelationship(id="gear-pair.profile-dimensions",kind="polygon-profile-dimensions",component_ids=["pinion","gear"],parameter_refs=["pinion_teeth","gear_teeth","module_mm"],description="Generated polygon root and tip vertex radii match the family formulas and accepted tooth counts.",verification_state=VerificationState.PASSED if profile_ok else VerificationState.FAILED),
-            AssemblyRelationship(id="gear-pair.tooth-contact", kind="tooth-contact", component_ids=["pinion", "gear"], parameter_refs=["pinion_teeth", "gear_teeth", "module_mm"], description="Conjugate tooth contact and interference are not established by this polygonal approximation.", verification_state=VerificationState.UNOBSERVABLE),
+            AssemblyRelationship(id="gear-pair.profile-dimensions",kind="sampled-involute-profile",component_ids=["pinion","gear"],parameter_refs=["pinion_teeth","gear_teeth","module_mm","pressure_angle_deg"],description="Generated CAD flank vertices follow the sampled involute equation at the accepted pressure angle; addendum and dedendum radii match the documented assumptions.",verification_state=VerificationState.PASSED if profile_ok else VerificationState.FAILED),
+            AssemblyRelationship(id="gear-pair.tooth-contact", kind="tooth-contact", component_ids=["pinion", "gear"], parameter_refs=["pinion_teeth", "gear_teeth", "module_mm", "pressure_angle_deg"], description="The actual profile is involute, but pair contact, interference and operating compatibility are not evaluated.", verification_state=VerificationState.UNOBSERVABLE),
         ],
         checks=[
             AssemblyCheck(id="gear.solids.valid", component_ids=["pinion", "gear"], parameter_refs=["pinion_teeth", "gear_teeth", "module_mm", "face_width_mm"], state=VerificationState.PASSED if solids_ok else VerificationState.FAILED, rule="Each generated Open CASCADE solid must be valid and have finite positive volume.", expected={"component_ids":["pinion","gear"],"volume_mm3":"finite and > 0"}, observed={row.id:{"valid":row.geometry_valid,"volume_mm3":row.volume_mm3,"bounds_mm":row.bounds_mm} for row in component_rows}, units="mm, mm^3", evidence=["Inspected the actual CadQuery assembly child solids produced for this revision."], limitations=["Solid validity does not establish functional meshing, load capacity, or manufacturing suitability."]),
             AssemblyCheck(id="gear.center-distance", relationship_id="gear-pair.center-distance", component_ids=["pinion", "gear"], parameter_refs=["pinion_teeth", "gear_teeth", "module_mm"], state=VerificationState.PASSED if center_ok else VerificationState.FAILED, rule="Driven-gear assembly origin equals (module * (z_pinion + z_gear) / 2, 0, 0); origin separation also equals that nominal distance.", expected={"distance_mm":expected_center,"gear_origin_mm":expected_origin}, observed={"distance_mm":observed_center,"pinion_origin_mm":pinion_origin,"gear_origin_mm":gear_origin}, units="mm", tolerance=0.05, evidence=[f"Derived from accepted values: {req.module_mm:g} * ({p.teeth} + {g.teeth}) / 2."], limitations=["Nominal reference-circle placement only; not a tooth-contact or interference check."]),
             AssemblyCheck(id="gear.face-width", relationship_id="gear-pair.common-face-width", component_ids=["pinion", "gear"], parameter_refs=["face_width_mm"], state=VerificationState.PASSED if widths_ok else VerificationState.FAILED, rule="Actual CAD solid Z bounds equal the accepted shared face width.", expected={"each_component_width_mm":width_expected}, observed={"pinion_width_mm":widths["pinion"],"gear_width_mm":widths["gear"]}, units="mm", tolerance=0.01, evidence=["Measured the generated CAD solid bounding dimensions."], limitations=["Equal face width does not prove axial alignment under real bearing/support constraints."]),
             AssemblyCheck(id="gear.axis-placement", relationship_id="gear-pair.parallel-axes", component_ids=["pinion", "gear"], parameter_refs=["pinion_teeth", "gear_teeth", "module_mm"], state=VerificationState.PASSED if axes_ok else VerificationState.FAILED, rule="Both actual assembly transforms preserve Z-parallel axes and zero Y/Z origin offsets.", expected={"axis":"+Z","origin_y_mm":0,"origin_z_mm":0,"gear_phase_deg":orientation_expected}, observed={"pinion_transform":pinion.loc.toTuple(),"gear_transform":gear.loc.toTuple()}, units="mm, deg", tolerance=1e-6, evidence=["Measured the generated CadQuery assembly child locations."], limitations=["The phase is a visualization convention, not validation of tooth engagement."]),
-            AssemblyCheck(id="gear.profile-dimensions",relationship_id="gear-pair.profile-dimensions",component_ids=["pinion","gear"],parameter_refs=["pinion_teeth","gear_teeth","module_mm"],state=VerificationState.PASSED if profile_ok else VerificationState.FAILED,rule="Actual solid vertices contain the expected number of root/tip ring points at module*(z-2.5)/2 and module*(z+2)/2 radii, within 0.01 mm.",expected={component.id:{"root_radius_mm":req.module_mm*(component.teeth-2.5)/2,"tip_radius_mm":req.module_mm*(component.teeth+2)/2,"minimum_vertices_each_ring":component.teeth*4} for component in (p,g)},observed=profile_measurements,units="mm",tolerance=0.01,evidence=["Radial distances were measured from vertices of each generated CadQuery solid."],limitations=["These are polygon root/tip radii; no involute pitch profile, contact, or interference check is performed."]),
-            AssemblyCheck(id="gear.ratio-derivation", component_ids=["pinion", "gear"], parameter_refs=["pinion_teeth", "gear_teeth"], state=VerificationState.PARTIAL, rule="Ideal external-pair ratio is derived as driven teeth / pinion teeth.", expected={"ratio":ratio}, observed={"ratio":derived["gear_ratio"],"source":"gear_teeth / pinion_teeth"}, units="ratio", evidence=[f"{g.teeth} / {p.teeth} = {ratio:g}; derivation follows canonical tooth counts."], limitations=["Ideal kinematic relation assumes an operating pair; this polygon model does not verify contact or actual motion."]),
-            AssemblyCheck(id="gear.tooth-contact", relationship_id="gear-pair.tooth-contact", component_ids=["pinion", "gear"], parameter_refs=["pinion_teeth", "gear_teeth", "module_mm"], state=VerificationState.UNOBSERVABLE, rule="Requires involute/contact/interference analysis unavailable in this family.", expected={}, observed={}, units=None, tolerance=None, evidence=["No pressure-angle profile, contact ratio, or collision analysis is implemented."], limitations=["Do not interpret nominal placement or phase as a functioning mesh."]),
-        ], limitations=["Polygonal educational profile; no involute, tooth contact, interference, strength, fatigue, thermal, or manufacturing validation."],
+            AssemblyCheck(id="gear.profile-dimensions",relationship_id="gear-pair.profile-dimensions",component_ids=["pinion","gear"],parameter_refs=["pinion_teeth","gear_teeth","module_mm","pressure_angle_deg"],state=VerificationState.PASSED if profile_ok else VerificationState.FAILED,rule="Measured generated-solid root/tip/profile-start vertices and sampled spline edges against the polar involute flank equation; flank angular residual <= 1e-6 rad.",expected={component.id:{"root_radius_mm":req.module_mm*(component.teeth-2.5)/2,"tip_radius_mm":req.module_mm*(component.teeth+2)/2,"base_radius_mm":req.module_mm*component.teeth*math.cos(math.radians(req.pressure_angle_deg))/2,"flank_edge_count_including_end_faces":component.teeth*4} for component in (p,g)},observed=profile_measurements,units="mm, rad",tolerance=1e-6,evidence=["Independently sampled actual generated OCCT spline edges and measured CAD profile vertices."],limitations=["The flank spline interpolates discrete exact involute samples; the root connector is straight radial, not a cutter trochoid. This does not verify pair contact or interference."]),
+            AssemblyCheck(id="gear.base-circles",component_ids=["pinion","gear"],parameter_refs=["pinion_teeth","gear_teeth","module_mm","pressure_angle_deg"],state=VerificationState.PASSED if base_circles_ok else VerificationState.FAILED,rule="Measured generated-solid vertices occur at the independently calculated max(base radius, root radius) involute start.",expected={key:{"base_radius_mm":req.module_mm*component.teeth*math.cos(math.radians(req.pressure_angle_deg))/2,"profile_start_radius_mm":max(req.module_mm*component.teeth*math.cos(math.radians(req.pressure_angle_deg))/2,req.module_mm*(component.teeth-2.5)/2)} for key,component in (("pinion",p),("gear",g))},observed=base_circle_measurements,units="mm",tolerance=1e-6,evidence=["Measured actual CAD vertex radii; independently calculated the base-circle and root radii from accepted inputs."],limitations=["Base-circle/profile-start agreement does not establish tooth contact or load capacity."]),
+            AssemblyCheck(id="gear.ratio-derivation", component_ids=["pinion", "gear"], parameter_refs=["pinion_teeth", "gear_teeth"], state=VerificationState.PARTIAL, rule="Ideal external-pair ratio is derived as driven teeth / pinion teeth.", expected={"ratio":ratio}, observed={"ratio":derived["gear_ratio"],"source":"gear_teeth / pinion_teeth"}, units="ratio", evidence=[f"{g.teeth} / {p.teeth} = {ratio:g}; derivation follows canonical tooth counts."], limitations=["Ideal kinematic relation; pair contact and actual motion are not verified."]),
+            AssemblyCheck(id="gear.tooth-contact", relationship_id="gear-pair.tooth-contact", component_ids=["pinion", "gear"], parameter_refs=["pinion_teeth", "gear_teeth", "module_mm", "pressure_angle_deg"], state=VerificationState.UNOBSERVABLE, rule="No validated contact ratio, tooth-pair interference or motion analysis is available.", expected={}, observed={}, units=None, tolerance=None, evidence=["The profile uses involute flanks, but no contact/interference solver is implemented."], limitations=["Do not interpret nominal center distance or visualization phase as proof of an operating mesh."]),
+        ], limitations=["Sampled involute flanks with straight radial root connectors; no cutter trochoid, contact, interference, strength, fatigue, thermal, or manufacturing validation."],
     )
 
 

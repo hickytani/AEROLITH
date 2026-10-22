@@ -2,7 +2,7 @@
 
 ## Scope
 
-This note records the public references and calculations behind the educational external spur-pair outputs. The references support standard geometry relationships and rotational power. They do not validate the application's polygon tooth boundary, gear engagement, load capacity, or suitability for machinery.
+This note records public references and calculations behind the educational external spur-pair outputs. They support standard reference geometry and the involute/base-circle construction, not tooth-contact or strength validation.
 
 ## References
 
@@ -11,6 +11,8 @@ This note records the public references and calculations behind the educational 
 3. KHK Gears, [Root Clearance](https://khkgears.net/new/gear_knowledge/gear-nomenclature/root-clearance.html). The nomenclature states addendum `1.00m`, dedendum `1.25m`, and resulting clearance `0.25m`; this is consistent with the standard root diameter `d − 2.5m`.
 4. OpenStax, [Work and Power for Rotational Motion](https://openstax.org/books/university-physics-volume-1/pages/10-8-work-and-power-for-rotational-motion), equation `P = τω`.
 5. NIST, [SI Units of Length](https://www.nist.gov/pml/owm/si-units-length), for the exact millimetre-to-metre scale used in the `N·mm` to `N·m` conversion.
+6. MIT, [Gears: Involutes](https://pergatory.mit.edu/resources/FUNdaMENTALs%20Book%20pdf/FUNdaMENTALs%20Topic%206.PDF), for the involute base-circle construction and the dependence of compatible involute gearing on pressure angle.
+7. NASA, [Analytical and Experimental Evaluation of Spur Gear Tooth Root Stresses](https://ntrs.nasa.gov/api/citations/20130000783/downloads/20130000783.pdf?attachment=true), for spur-gear base-circle and pressure-angle relations. This is a reference for geometry, not evidence that this application implements the report's stress analysis.
 
 ## Equations and stated assumptions
 
@@ -22,9 +24,10 @@ For an ordinary external pair with pinion tooth count `z1`, driven tooth count `
 - Ideal speed magnitude: `n2 = n1/i`, from the same equal-tangential-velocity relationship.
 - Ideal torque magnitude: `T2 = T1 i`, assuming equal input/output power with zero losses (`P = τω`, OpenStax reference 4). This is not a predicted real output torque or rating.
 - Standard nominal addendum and root reference diameters: `d_a = m(z+2)` and `d_f = m(z−2.5)` (KHK references 1 and 3).
+- Involute base diameter: `d_b = d cos α`, where `α` is the reference pressure angle (MIT and NASA references 6 and 7). The CAD flank is interpolated from 17 exact samples of the circle involute parameterization `x = r_b(cos t + t sin t)`, `y = r_b(sin t − t cos t)`. For the ordinary unshifted assumption, pitch-circle half tooth thickness is `π/(2z)`.
 - Torque conversion: `1 N·mm = 0.001 N·m` because `1 mm = 0.001 m` (NIST reference 5).
 
-The CAD code uses the standard addendum/root radii to place polygon vertices. These are radii of vertex rings, not circular tooth boundaries. The tip polygon is phase-dependent; therefore the nominal addendum diameter need not equal the axis-aligned CAD bounding-box span. The CAD boundary is not an involute and the reference-circle placement does not prove contact or interference-free operation.
+The CAD generator interpolates one spline edge through 17 exact samples (16 intervals) per involute flank, uses addendum `m` and dedendum `1.25m`, and connects each active flank start to the root circle with a straight radial connector. That connector is not a cutter-generated trochoid. The geometry assumes no profile shift and zero nominal backlash. The nominal addendum diameter need not equal the axis-aligned CAD bounds because the sampled tooth profile is phase-dependent. Actual spline edges are sampled and checked against the polar involute relation; this verifies implementation geometry only. Nominal center distance does not prove contact or interference-free operation.
 
 ## Fixed reference cases
 
@@ -42,6 +45,8 @@ The API reference-case tests compare floats with absolute tolerance `1e−10` an
 
 For the default 18-tooth pinion, module 2 mm, the nominal addendum diameter is 40 mm. With the documented tooth phase, maximum-radius vertices are at 5 degrees from the X/Y axes; the analytical axis span is `2 × 20 × cos(5°) = 39.8477879237 mm`. The kernel test checks this span and the expected two root and two tip vertices per tooth, with `1e−7 mm` tolerance for trigonometric and kernel floating-point noise. STEP is reopened into two valid solids and its volume is compared to the source assembly. STL is reopened as a tessellated shape; the `0.2 mm` XY bounding tolerance allows deviation from the source STEP bounds under the configured `0.08 mm` linear tessellation tolerance. These checks establish file readability and geometric consistency at the tested model settings, not physical gear correctness.
 
+The default pinion's analytic base radius is independently fixed at `9 × cos(20°) = 16.9144671741465 mm`; its root and addendum radii are `15.5 mm` and `20 mm`. The assembly geometry regression asserts those literal references against measured Open CASCADE profile radii and additionally injects a 12-tooth CAD solid into the accepted 18-tooth pinion position to prove the profile check fails. Actual spline edge samples are tested against the polar involute equation with a `1e−6 rad` angular residual limit. These are geometry implementation checks; they are not an independent gear contact/profile certification.
+
 ## Verification status meaning
 
 `overall` is `PARTIAL` when implemented input consistency checks pass, and `FAILED` when they fail. It is deliberately never `PASSED`: strength, contact, thermal behavior, and service conditions are unresolved or untested. The failed input state means an implemented constraint was violated; it is not a finding of mechanical failure. Individual results retain their own evidence and scope.
@@ -50,6 +55,6 @@ For the default 18-tooth pinion, module 2 mm, the nominal addendum diameter is 4
 
 The `assembly_verification` object is a software/geometry consistency record, not an additional physical design standard. Check definitions are versioned as `assembly-relationships-0.1` and each row records the project revision and geometry revision it inspected.
 
-For gear assemblies, the generated CadQuery child transforms are compared with `a = m(z1 + z2)/2` at a `0.05 mm` translation tolerance. Both solid Z bounds are compared with accepted face width at `0.01 mm`; actual solid vertices are counted at the polygon root and tip radii within `0.01 mm`. The check also records solid validity/positive volume and the generator's 180/z2 degree display phase. The ratio check remains `PARTIAL`; tooth contact remains `UNOBSERVABLE`. These criteria verify the implementation's generated layout, not gear engagement, involute action, interference-free operation, strength, or manufacturing fitness.
+For gear assemblies, the generated CadQuery child transforms are compared with `a = m(z1 + z2)/2` at a `0.05 mm` translation tolerance. Both solid Z bounds are compared with accepted face width at `0.01 mm`. Actual solid vertices are checked for root/tip radii and profile-start location; sampled flank angles are independently compared with the polar involute equation at `1e-6 rad` residual. Base circles are recomputed from accepted `m`, `z` and pressure angle. The check also records solid validity/positive volume and the generator's display phase. The ratio check remains `PARTIAL`; tooth contact remains `UNOBSERVABLE`. These criteria test generated geometry consistency, not conjugate pair engagement, interference-free operation, strength, or manufacturing fitness.
 
 For EV assemblies, tire/rim/hub bbox centers, tire/axle references, rail symmetry, overall outer bounds, and crossmember locations are measured from actual generated CadQuery solids with `0.05 mm` location/dimension tolerance. Each modeled crossmember is Boolean-intersected with both rails; a positive OCCT overlap volume demonstrates intersection only. This model has no joint, restraint, fastener, mount datum, or clearance acceptance criteria, so package/frame mounting stays `UNOBSERVABLE` and overall assembly status remains `PARTIAL`. The checks provide no vehicle structural, dynamic, thermal, range, crash, safety, regulatory, or roadworthiness validation.

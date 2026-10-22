@@ -28,7 +28,7 @@ from . import cad, store
 from . import artifacts as artifact_store
 from .assemblies import build_assembly_evidence
 from .domain import Design, EditRequest, InterpretRequest
-from .automotive import (COMPONENT_INFO, VEHICLE_EDITABLE_PARAMETERS, VEHICLE_GENERATOR_VERSION, VehicleDesign, VehicleGenerationRequest, VehicleParameterEditRequest, make_vehicle_design, propagate_vehicle_edits, vehicle_bom, vehicle_manifest, vehicle_verification, vehicle_component_solids, export_vehicle_drawing_pdf, export_vehicle_component_stl, export_vehicle_step, export_vehicle_stl)
+from .automotive import (COMPONENT_INFO, VEHICLE_DRAWING_VERSION, VEHICLE_EDITABLE_PARAMETERS, VEHICLE_GENERATOR_VERSION, VehicleDesign, VehicleGenerationRequest, VehicleParameterEditRequest, make_vehicle_design, propagate_vehicle_edits, vehicle_bom, vehicle_manifest, vehicle_verification, vehicle_component_solids, export_vehicle_drawing_pdf, export_vehicle_component_stl, export_vehicle_step, export_vehicle_stl)
 from .engineering import calculation_details, derive, validate
 from .drawings import GEAR_DRAWING_VERSION, gear_pair_reference_pdf
 from .families import (
@@ -70,16 +70,17 @@ def require_current_revision(design):
         raise HTTPException(status_code=409, detail=f"Design changed from revision {design.revision} to {latest.revision} during artifact generation.", headers={"X-Design-Revision":str(latest.revision)})
 
 
-def response(design: Design | VehicleDesign) -> dict:
+def response(design: Design | VehicleDesign, assembly_evidence=None) -> dict:
     family = get_family(design.family, design.schema_version)
     family.validate_state(design)
     verification = {key: item.model_dump(mode="json") if hasattr(item, "model_dump") else item for key, item in family.verify(design).items()}
-    result = {**design.model_dump(mode="json"), "derived": family.calculate(design), "verification": verification, "assembly_verification": build_assembly_evidence(design)}
+    result = {**design.model_dump(mode="json"), "derived": family.calculate(design), "verification": verification,
+              "assembly_verification": assembly_evidence if assembly_evidence is not None else build_assembly_evidence(design)}
     if design.family == "spur_gear_pair":
-        component_refs = {"pinion": ["pinion_teeth", "module_mm", "face_width_mm"], "gear": ["gear_teeth", "module_mm", "face_width_mm"], "gear-pair": ["input_torque_Nm", "input_speed_rpm", "gear_ratio"]}
+        component_refs = {"pinion": ["pinion_teeth", "module_mm", "face_width_mm", "pressure_angle_deg"], "gear": ["gear_teeth", "module_mm", "face_width_mm", "pressure_angle_deg"], "gear-pair": ["input_torque_Nm", "input_speed_rpm", "gear_ratio"]}
         values = {**design.requirements.model_dump(), "pinion_teeth": design.components[0].teeth, "gear_teeth": design.components[1].teeth}
-        units = {"pinion_teeth":"teeth","gear_teeth":"teeth","gear_ratio":"ratio","module_mm":"mm","face_width_mm":"mm","input_torque_Nm":"N·m","input_speed_rpm":"rpm"}
-        trace = {name:{"canonical_target":f"requirements.{name}" if name not in {"pinion_teeth","gear_teeth"} else f"components.{name.removesuffix('_teeth')}.teeth","value":value,"unit":units[name],"source":design.requirement_sources.get(name,"derived" if name=="gear_ratio" else "assumed"),"evidence":design.requirement_evidence.get(name)} for name,value in values.items()}
+        units = {"pinion_teeth":"teeth","gear_teeth":"teeth","gear_ratio":"ratio","module_mm":"mm","face_width_mm":"mm","pressure_angle_deg":"deg","input_torque_Nm":"N·m","input_speed_rpm":"rpm"}
+        trace = {name:{"canonical_target":f"requirements.{name}" if name not in {"pinion_teeth","gear_teeth"} else f"components.{name.removesuffix('_teeth')}.teeth","value":value,"unit":units[name],"source":design.requirement_sources.get(name,"derived" if name=="gear_ratio" else "assumed"),"evidence":design.requirement_evidence.get(name),"quantity":design.parameter_quantities[name].model_dump(mode="json")} for name,value in values.items()}
         for item in trace.values():
             evidence=item["evidence"]
             if evidence and design.source_prompt:
@@ -88,6 +89,18 @@ def response(design: Design | VehicleDesign) -> dict:
         return {**result, "requirement_traceability":{"source_prompt":design.source_prompt,"components":{key:refs for key,refs in component_refs.items()},"parameters":trace}, "calculations": calculation_details(design), "validation": validate(design)}
     result["editable_parameters"]={name:{**metadata,"value":getattr(design.requirements,name).value,"source":getattr(design.requirements,name).source,"evidence":getattr(design.requirements,name).evidence} for name,metadata in VEHICLE_EDITABLE_PARAMETERS.items()}
     return {**result, "calculations":{"provenance":{"method_version":VEHICLE_GENERATOR_VERSION,"design_revision":design.revision},"results":[]}, "validation":{"state":"PARTIAL","issues":["Conceptual packaging geometry only; range and safety remain unresolved."]}}
+
+
+def save_candidate_at_revision(candidate: Design | VehicleDesign, expected_revision: int) -> None:
+    """Commit only if the canonical snapshot used to build this candidate is current."""
+    try:
+        store.save_if_revision(candidate, expected_revision)
+    except store.ProjectRevisionConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Project revision advanced from {exc.expected_revision} to {exc.current_revision}. Reload and review before committing.",
+            headers={"X-Design-Revision": str(exc.current_revision)},
+        ) from exc
 
 
 @app.exception_handler(store.ProjectStateError)
@@ -382,12 +395,13 @@ def initialize_project(request: FamilyInitializationRequest):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     current = store.load()
     candidate = family.default_design()
-    candidate.id = f"local-{uuid.uuid4().hex[:12]}"
+    candidate.id = current.id
+    candidate.parameter_records = {}
     candidate.revision = current.revision + 1
     candidate.history = [*current.history, {"revision": current.revision, "changed_at": current.updated_at, "design": current.model_dump(mode="json")}]
     candidate.updated_at = datetime.now(timezone.utc).isoformat()
     family.validate_state(candidate)
-    store.save(candidate)
+    save_candidate_at_revision(candidate, current.revision)
     return response(candidate)
 
 
@@ -395,10 +409,12 @@ def initialize_project(request: FamilyInitializationRequest):
 def restore_demo_project():
     current = store.load()
     candidate = store.default_design()
+    candidate.id = current.id
+    candidate.parameter_records = {}
     candidate.revision = current.revision + 1
     candidate.history = [*current.history, {"revision": current.revision, "changed_at": current.updated_at, "design": current.model_dump(mode="json")}]
     candidate.updated_at = datetime.now(timezone.utc).isoformat()
-    store.save(candidate)
+    save_candidate_at_revision(candidate, current.revision)
     return response(candidate)
 
 
@@ -410,10 +426,12 @@ def gear_experiment(parameters: GearExperimentRequest):
     values = parameters.model_dump()
     design.components[0].teeth = values["pinion_teeth"]
     design.components[1].teeth = values["gear_teeth"]
-    for key in ("module_mm", "face_width_mm", "input_torque_Nm", "input_speed_rpm"):
+    for key in ("module_mm", "face_width_mm", "pressure_angle_deg", "input_torque_Nm", "input_speed_rpm"):
         setattr(design.requirements, key, values[key])
     design.requirements.gear_ratio = values["gear_teeth"] / values["pinion_teeth"]
     design.revision = current.revision
+    design.parameter_quantities = {}
+    design.parameter_records = {}
     design = Design.model_validate(design.model_dump(mode="json"))
     details = calculation_details(design)
     details["provenance"].update({"design_revision": None, "source_revision": current.revision, "context": "uncommitted learning experiment"})
@@ -448,6 +466,14 @@ def edit_project(edit: EditRequest):
         candidate.components[1].teeth = values.pop("gear_teeth")
     for key, value in values.items():
         setattr(candidate.requirements, key, value)
+    angle_assumption = (
+        "Ordinary unshifted external spur gears; sampled involute flanks at "
+        f"{candidate.requirements.pressure_angle_deg:g}° pressure angle."
+    )
+    candidate.assumptions = [angle_assumption, *(
+        item for item in candidate.assumptions
+        if not item.startswith("Ordinary unshifted external spur gears; sampled involute flanks at ")
+    )]
     candidate.requirements.gear_ratio = candidate.components[1].teeth / candidate.components[0].teeth
     if source_prompt is not None:
         candidate.source_prompt = source_prompt
@@ -466,10 +492,18 @@ def edit_project(edit: EditRequest):
         candidate.requirement_evidence.pop("gear_ratio", None)
     candidate.revision += 1
     candidate.updated_at = datetime.now(timezone.utc).isoformat()
+    # Canonical numeric fields remain API-compatible; rebuild their additive
+    # versioned quantity envelopes for this candidate revision.
+    candidate.parameter_quantities = {}
+    candidate.parameter_records = {}
     # Validate the complete candidate (including cross-field invariants) before persistence.
     candidate = Design.model_validate(candidate.model_dump(mode="json"))
-    store.save(candidate)
-    return response(candidate)
+    # Generate and verify the full candidate geometry before persistence. If
+    # profile construction or a geometry-backed check fails, the old revision
+    # and its artifacts remain canonical.
+    assembly_evidence = build_assembly_evidence(candidate)
+    save_candidate_at_revision(candidate, current.revision)
+    return response(candidate, assembly_evidence)
 
 
 @app.post("/api/v1/project/interpret")
@@ -544,7 +578,11 @@ def generate_vehicle_project(request: VehicleGenerationRequest):
         candidate = make_vehicle_design(request, current.revision + 1, history)
     except Exception as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    store.save(candidate)
+    candidate.id = current.id
+    candidate.parameter_records = {}
+    if candidate.family == "electric_vehicle":
+        candidate = VehicleDesign.model_validate(candidate.model_dump(mode="json"))
+    save_candidate_at_revision(candidate, current.revision)
     return response(candidate)
 
 
@@ -719,7 +757,7 @@ def vehicle_layout_export():
     try:
         export_vehicle_drawing_pdf(design, temporary)
         require_current_revision(design)
-        path, metadata = artifact_store.publish(temporary.read_bytes(), ARTIFACTS, design, "layout-drawing", "pdf", VEHICLE_GENERATOR_VERSION)
+        path, metadata = artifact_store.publish(temporary.read_bytes(), ARTIFACTS, design, "layout-drawing", "pdf", VEHICLE_DRAWING_VERSION)
     except HTTPException:
         raise
     except Exception as exc:
@@ -764,7 +802,7 @@ def report():
     document = f"""<!doctype html><meta charset="utf-8"><title>AeroPKmech report R{design.revision}</title>
     <style>body{{font:15px system-ui;max-width:900px;margin:48px auto;color:#13283a}}h1{{font-size:32px}}table{{border-collapse:collapse;width:100%}}td{{padding:10px;border-bottom:1px solid #ccd4d9}}.note{{padding:16px;background:#f2f6f8}}</style>
     <h1>AeroPKmech · Engineering note</h1><p>Spur gear pair · revision {design.revision} · report {artifact_store.REPORT_VERSION} · {design.updated_at}</p>
-    <h2>Requirements</h2><pre>{html.escape(design.requirements.model_dump_json(indent=2))}</pre><h2>Derived results</h2><table>{rows}</table>
+    <h2>Requirements</h2><pre>{html.escape(design.requirements.model_dump_json(indent=2))}</pre><h2>Versioned parameter quantities</h2><pre>{html.escape(json.dumps({key: value.model_dump(mode="json") for key, value in design.parameter_quantities.items()}, indent=2))}</pre><h2>Derived results</h2><table>{rows}</table>
     <h2>Verification</h2><ul>{verification}</ul><p>{html.escape(derived['geometry_note'])}</p>
     <div class="note">Educational model only. No safety, fatigue, thermal, materials, standards, manufacturing or real-world suitability claim is made.</div><h2>Assumptions</h2><ul>{assumptions}</ul>"""
     try:
@@ -782,7 +820,7 @@ def report_pdf():
         doc = SimpleDocTemplate(output,pagesize=letter,title=f"EV packaging note revision {design.revision}",author="AeroPKmech Studio")
         styles=getSampleStyleSheet()
         p=design.requirements
-        doc.build([Paragraph("Concept EV packaging note",styles["Title"]),Paragraph(f"Revision {design.revision} · all dimensions mm · conceptual CAD envelopes only",styles["Normal"]),Spacer(1,12),Paragraph("Specified requirements",styles["Heading2"]),Paragraph(html.escape(p.model_dump_json(indent=2)),styles["Code"]),Spacer(1,12),Paragraph("Limits",styles["Heading2"]),Paragraph("The range value is a target, not a calculation. No mass, structural, crash, thermal, regulatory, safety, or manufacturing verification is provided.",styles["BodyText"]),Paragraph("Assumptions",styles["Heading2"]),*[Paragraph(html.escape(item),styles["BodyText"]) for item in design.assumptions]])
+        doc.build([Paragraph("Concept EV packaging note",styles["Title"]),Paragraph(f"Revision {design.revision} · all dimensions mm · conceptual CAD envelopes only",styles["Normal"]),Spacer(1,12),Paragraph("Specified requirements",styles["Heading2"]),Paragraph(html.escape(p.model_dump_json(indent=2)),styles["Code"]),Paragraph("Versioned parameter quantities",styles["Heading2"]),Paragraph(html.escape(json.dumps({key:value.model_dump(mode="json") for key,value in design.parameter_quantities.items()},indent=2)),styles["Code"]),Spacer(1,12),Paragraph("Limits",styles["Heading2"]),Paragraph("The range value is a target, not a calculation. No mass, structural, crash, thermal, regulatory, safety, or manufacturing verification is provided.",styles["BodyText"]),Paragraph("Assumptions",styles["Heading2"]),*[Paragraph(html.escape(item),styles["BodyText"]) for item in design.assumptions]])
         path,metadata=artifact_store.publish(output.getvalue(),ARTIFACTS,design,"report","pdf",VEHICLE_GENERATOR_VERSION)
         return FileResponse(path,media_type="application/pdf",filename=path.name,headers=artifact_headers(metadata,design.revision))
     derived = derive(design)
@@ -796,6 +834,8 @@ def report_pdf():
         Paragraph("Requirements", styles["Heading2"]),
         Paragraph(" · ".join(f"{k}: {v}" for k, v in design.requirements.model_dump().items()), styles["BodyText"]),
         Spacer(1, 10),
+        Paragraph("Versioned parameter quantities", styles["Heading2"]),
+        Paragraph(html.escape(json.dumps({key: value.model_dump(mode="json") for key, value in design.parameter_quantities.items()}, indent=2)), styles["Code"]),
         Paragraph("Calculated results", styles["Heading2"]),
         Table([["Result", "Value"]] + [[key.replace("_", " "), f"{value:.3f}"] for key, value in derived.items() if isinstance(value, (int, float))], colWidths=[300, 150]),
         Spacer(1, 12),
@@ -816,7 +856,7 @@ def report_pdf():
         Spacer(1, 12),
         Paragraph("Educational model only. No safety, fatigue, thermal, material, standards, manufacturing, or real-world suitability claim is made.", styles["BodyText"]),
     ]
-    table = story[7]
+    table = next(item for item in story if isinstance(item, Table))
     table.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e9f0f3")), ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#b7c3cb")), ("PADDING", (0, 0), (-1, -1), 7)]))
     try:
         doc.build(story)

@@ -7,6 +7,7 @@ const nextConfig = {
       { source: '/api/:path*', destination: `${api}/api/:path*` },
       { source: '/vendor/:path*', destination: `${api}/vendor/:path*` },
       { source: '/app.js', destination: `${api}/app.js` },
+      { source: '/api-client.js', destination: `${api}/api-client.js` },
       { source: '/mesh-loader.js', destination: `${api}/mesh-loader.js` },
       { source: '/camera-fit.js', destination: `${api}/camera-fit.js` },
       { source: '/style.css', destination: `${api}/style.css` },

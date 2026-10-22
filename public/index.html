@@ -25,6 +25,7 @@
         <label>Pinion teeth<input id="pinion" type="number" min="8" max="80" step="1" disabled></label>
         <label>Driven gear teeth<input id="gear" type="number" min="8" max="120" step="1" disabled></label>
         <label>Module<span class="unit">mm</span><input id="module" type="number" min="0.5" max="6" step="0.1" disabled></label>
+        <label>Pressure angle<span class="unit">deg</span><input id="pressure-angle" type="number" min="14" max="30" step="0.5" disabled></label>
         <label>Face width<span class="unit">mm</span><input id="width" type="number" min="2" max="60" step="1" disabled></label>
         <div class="rule"></div>
         <label>Input torque<span class="unit">N·m</span><input id="torque" type="number" min="0.1" step="0.1" disabled></label>
@@ -41,7 +42,7 @@
       <section class="stage">
         <div class="stagebar"><div><b id="stage-title">ASSEMBLY VIEW</b><span id="geometry-rev">GEOMETRY NOT LOADED</span><span id="gear-label">OUTPUT · 3:1</span></div><div class="cam"><button data-view="iso">ISO</button><button data-view="top">TOP</button><button data-view="front">FRONT</button><button id="reset">FIT</button></div></div>
         <div id="viewport"><div class="loading" id="loading" role="status">Preparing parametric view…</div><div class="geometry-errors" id="geometry-errors" role="alert" hidden></div><div class="axis">X <b>Y</b> Z</div></div>
-        <div class="stagefoot"><span><i class="signal signal-loading" id="geometry-signal"></i><span id="geometry-state">GEOMETRY NOT LOADED</span></span><span id="geometry-note">EDUCATIONAL TOOTH APPROXIMATION · mm</span></div>
+        <div class="stagefoot"><span><i class="signal signal-loading" id="geometry-signal"></i><span id="geometry-state">GEOMETRY NOT LOADED</span></span><span id="geometry-note">SAMPLED INVOLUTE · 20° · mm</span></div>
       </section>
       <aside class="results">
         <div class="railhead"><span>03</span><b>Calculated results</b><small id="result-rev">CURRENT REVISION</small></div>
