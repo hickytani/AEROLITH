@@ -22,6 +22,13 @@ class Requirements(BaseModel):
         description="Outside diameter of the cylindrical shaft hub (mm). Must exceed computed bore diameter.")
     hub_length_mm: float | None = Field(default=None, ge=2, le=60,
         description="Axial length of the shaft hub extension beyond one gear face (mm).")
+    # Optional user-specified shaft bore diameter and parallel drive keyway (DIN 6885 torque transfer)
+    bore_diameter_mm: float | None = Field(default=None, ge=3, le=50,
+        description="Shaft bore diameter (mm). When omitted, derived automatically from module and tooth count.")
+    keyway_width_mm: float | None = Field(default=None, ge=1, le=20,
+        description="Parallel drive keyway width (mm, DIN 6885 standard).")
+    keyway_depth_mm: float | None = Field(default=None, ge=0.5, le=10,
+        description="Parallel drive keyway depth measured from bore surface (mm).")
 
 
 class Component(BaseModel):
@@ -64,14 +71,33 @@ class Design(BaseModel):
         for key, evidence in self.requirement_evidence.items():
             if not evidence or not self.source_prompt or evidence not in self.source_prompt:
                 raise ValueError(f"Requirement evidence for {key} must be an exact span of the retained source prompt.")
-        # Hub cross-field constraint: hub outside diameter must exceed computed bore to produce a valid solid
-        if self.requirements.hub_diameter_mm is not None:
-            min_teeth = min(c.teeth for c in self.components)
-            bore_d = min(max(self.requirements.module_mm * 2, 4.0), self.requirements.module_mm * (min_teeth - 2.5) * 0.7)
-            if self.requirements.hub_diameter_mm <= bore_d:
+        # Bore, hub and keyway cross-field geometric constraints
+        min_teeth = min(c.teeth for c in self.components)
+        effective_bore = self.requirements.bore_diameter_mm if self.requirements.bore_diameter_mm is not None else min(max(self.requirements.module_mm * 2, 4.0), self.requirements.module_mm * (min_teeth - 2.5) * 0.7)
+        min_root = min(self.requirements.module_mm * (c.teeth - 2.5) for c in self.components)
+        if self.requirements.bore_diameter_mm is not None:
+            if self.requirements.bore_diameter_mm >= min_root * 0.90:
                 raise ValueError(
-                    f"hub_diameter_mm ({self.requirements.hub_diameter_mm:.2f}) must exceed computed bore diameter"
-                    f" ({bore_d:.2f} mm). Increase hub_diameter_mm or reduce module_mm."
+                    f"bore_diameter_mm ({self.requirements.bore_diameter_mm:.2f} mm) exceeds safe rim thickness limit "
+                    f"for smallest root diameter ({min_root:.2f} mm). Reduce bore or increase tooth count / module."
+                )
+        if self.requirements.hub_diameter_mm is not None:
+            if self.requirements.hub_diameter_mm <= effective_bore:
+                raise ValueError(
+                    f"hub_diameter_mm ({self.requirements.hub_diameter_mm:.2f}) must exceed bore diameter"
+                    f" ({effective_bore:.2f} mm). Increase hub_diameter_mm or reduce bore."
+                )
+        if self.requirements.keyway_width_mm is not None or self.requirements.keyway_depth_mm is not None:
+            if self.requirements.keyway_width_mm is None or self.requirements.keyway_depth_mm is None:
+                raise ValueError("Both keyway_width_mm and keyway_depth_mm must be provided together.")
+            if self.requirements.keyway_width_mm >= effective_bore:
+                raise ValueError(
+                    f"keyway_width_mm ({self.requirements.keyway_width_mm:.2f} mm) must be strictly less than bore diameter ({effective_bore:.2f} mm)."
+                )
+            outer_boundary = self.requirements.hub_diameter_mm / 2 if self.requirements.hub_diameter_mm is not None else min_root / 2
+            if (effective_bore / 2 + self.requirements.keyway_depth_mm) >= outer_boundary:
+                raise ValueError(
+                    f"keyway_depth_mm ({self.requirements.keyway_depth_mm:.2f} mm) cuts through gear root/hub boundary ({outer_boundary:.2f} mm radius)."
                 )
         quantity_specs: dict[str, tuple[float, str, QuantityKind, float | None, float | None]] = {
             "pinion_teeth": (self.components[0].teeth, "teeth", "count", 8, 80),
@@ -87,6 +113,12 @@ class Design(BaseModel):
             quantity_specs["hub_diameter_mm"] = (self.requirements.hub_diameter_mm, "mm", "length", 4, 60)
         if self.requirements.hub_length_mm is not None:
             quantity_specs["hub_length_mm"] = (self.requirements.hub_length_mm, "mm", "length", 2, 60)
+        if self.requirements.bore_diameter_mm is not None:
+            quantity_specs["bore_diameter_mm"] = (self.requirements.bore_diameter_mm, "mm", "length", 3, 50)
+        if self.requirements.keyway_width_mm is not None:
+            quantity_specs["keyway_width_mm"] = (self.requirements.keyway_width_mm, "mm", "length", 1, 20)
+        if self.requirements.keyway_depth_mm is not None:
+            quantity_specs["keyway_depth_mm"] = (self.requirements.keyway_depth_mm, "mm", "length", 0.5, 10)
         expected_quantities = {}
 
         for name, (value, unit, kind, minimum, maximum) in quantity_specs.items():
@@ -141,6 +173,9 @@ class EditRequest(BaseModel):
     pressure_angle_deg: float | None = Field(default=None, ge=14, le=30)
     hub_diameter_mm: float | None = Field(default=None, ge=4, le=60)
     hub_length_mm: float | None = Field(default=None, ge=2, le=60)
+    bore_diameter_mm: float | None = Field(default=None, ge=3, le=50)
+    keyway_width_mm: float | None = Field(default=None, ge=1, le=20)
+    keyway_depth_mm: float | None = Field(default=None, ge=0.5, le=10)
 
     @model_validator(mode="after")
     def at_least_one_edit(self) -> "EditRequest":

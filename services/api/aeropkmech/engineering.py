@@ -6,6 +6,9 @@ from pint import UnitRegistry
 
 from .domain import Design
 
+import os
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+
 CALCULATION_METHOD_VERSION = "spur-gear-involute-dimensions-0.2"
 
 units = UnitRegistry()
@@ -13,6 +16,8 @@ units = UnitRegistry()
 
 def bore_diameter_mm(design: Design) -> float:
     req = design.requirements
+    if req.bore_diameter_mm is not None:
+        return req.bore_diameter_mm
     minimum_teeth = min(component.teeth for component in design.components)
     return min(max(req.module_mm * 2, 4.0), req.module_mm * (minimum_teeth - 2.5) * 0.7)
 
@@ -68,9 +73,17 @@ def derive(design: Design) -> dict:
             "hub_volume_mm3": round(math.pi * hub_r ** 2 * req.hub_length_mm, 3),
             "note": (
                 "Cylindrical shaft hub extension; outside diameter must exceed bore for valid OCCT solid. "
-                "Hub geometry is an envelope approximation only — no keyway, spline, interference-fit, "
+                "Hub geometry is an envelope approximation only — no spline, interference-fit, "
                 "fatigue, or strength analysis is performed."
             ),
+        }
+    if req.keyway_width_mm is not None and req.keyway_depth_mm is not None:
+        result["keyway_geometry"] = {
+            "keyway_width_mm": req.keyway_width_mm,
+            "keyway_depth_mm": req.keyway_depth_mm,
+            "bore_diameter_mm": bore_diameter_mm(design),
+            "standard": "DIN 6885 / ISO 773 parallel drive keyway",
+            "note": "Parallel keyway slot cut into shaft bore for positive torque transmission.",
         }
     return result
 

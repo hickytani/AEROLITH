@@ -285,6 +285,9 @@ def _gear_assembly(design: Design) -> AssemblyEvidence:
         "pressure_angle_deg": "deg",
         "hub_diameter_mm": "mm",
         "hub_length_mm": "mm",
+        "bore_diameter_mm": "mm",
+        "keyway_width_mm": "mm",
+        "keyway_depth_mm": "mm",
     }
     requirements = {name:{"canonical_target":f"requirements.{name}" if name not in {"pinion_teeth","gear_teeth"} else f"components.{name.removesuffix('_teeth')}.teeth","value":value,"unit":gear_units.get(name, "mm"),"source":design.requirement_sources.get(name,"derived" if name=="gear_ratio" else "assumed"),"evidence":design.requirement_evidence.get(name)} for name,value in gear_values.items()}
     for trace in requirements.values():

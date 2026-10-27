@@ -28,6 +28,10 @@ class ProposedRequirements(BaseModel):
     # Optional hub geometry — absent from 'missing' list (they are optional, not required for a valid spec)
     hub_diameter_mm: float | None = Field(default=None, ge=4, le=60)
     hub_length_mm: float | None = Field(default=None, ge=2, le=60)
+    # Optional shaft bore and keyway specification
+    bore_diameter_mm: float | None = Field(default=None, ge=3, le=50)
+    keyway_width_mm: float | None = Field(default=None, ge=1, le=20)
+    keyway_depth_mm: float | None = Field(default=None, ge=0.5, le=10)
 
 
 
@@ -232,6 +236,9 @@ def _source_span(text: str, evidence: str | None) -> dict[str, int | str] | None
     return {"start": start, "end": start + len(evidence), "text": evidence}
 
 
+_OPTIONAL_FIELDS = {"hub_diameter_mm", "hub_length_mm", "bore_diameter_mm", "keyway_width_mm", "keyway_depth_mm"}
+
+
 def extract_local(text: str) -> Extraction:
     evidence: dict[str, str] = {}
     derivations: dict[str, str] = {}
@@ -298,8 +305,14 @@ def extract_local(text: str) -> Extraction:
         if len(normalized) > 1 and any(abs(item - normalized[0]) > 1e-9 for item in normalized[1:]):
             conflicts.append(f"Conflicting explicit values for {key} after conversion to mm.")
 
-    # Hub geometry extraction (optional parameters — missing is not an error)
-    for key, label_pattern in (("hub_diameter_mm", r"hub\s*(?:outside\s*)?(?:diameter|OD)"), ("hub_length_mm", r"hub\s*(?:length|extension|height)")):
+    # Hub, bore and keyway geometry extraction (optional parameters — missing is not an error)
+    for key, label_pattern in (
+        ("hub_diameter_mm", r"hub\s*(?:outside\s*)?(?:diameter|OD)"),
+        ("hub_length_mm", r"hub\s*(?:length|extension|height)"),
+        ("bore_diameter_mm", r"(?:shaft\s+)?bore(?:\s*diameter)?"),
+        ("keyway_width_mm", r"keyway\s*(?:slot\s*)?(?:width|w)"),
+        ("keyway_depth_mm", r"keyway\s*(?:slot\s*)?(?:depth|d)"),
+    ):
         value, normalized, unsupported_units, literal = _extract_length_mm(text, label_pattern)
         if value is not None:
             fields[key] = value
@@ -308,6 +321,14 @@ def extract_local(text: str) -> Extraction:
         if unsupported_units:
             conflicts.append(f"Unsupported length unit for {key}: " + "; ".join(unsupported_units))
 
+    # Support shorthand keyway format: "keyway 4x2 mm" or "keyway 4x1.8"
+    if fields.get("keyway_width_mm") is None:
+        kw_m = re.search(r"keyway\s*(\d+(?:\.\d+)?)\s*(?:x|\*|by)\s*(\d+(?:\.\d+)?)\s*(mm)?\b", text, re.IGNORECASE)
+        if kw_m:
+            fields["keyway_width_mm"] = float(kw_m.group(1))
+            fields["keyway_depth_mm"] = float(kw_m.group(2))
+            evidence["keyway_width_mm"] = kw_m.group(0)
+            evidence["keyway_depth_mm"] = kw_m.group(0)
 
     if fields["pinion_teeth"] and fields["gear_teeth"]:
         ratio_from_teeth = fields["gear_teeth"] / fields["pinion_teeth"]
@@ -330,7 +351,7 @@ def extract_local(text: str) -> Extraction:
             conflicts.append(f"{name} value {value!r} is outside the supported input range ({issue['msg']}).")
             fields[name] = None
         proposal = ProposedRequirements.model_validate(fields)
-    _OPTIONAL_FIELDS = {"hub_diameter_mm", "hub_length_mm"}
+    _OPTIONAL_FIELDS = {"hub_diameter_mm", "hub_length_mm", "bore_diameter_mm", "keyway_width_mm", "keyway_depth_mm"}
     missing = [key for key, value in proposal.model_dump().items() if value is None and key not in _OPTIONAL_FIELDS]
 
     return Extraction(
@@ -490,7 +511,7 @@ def propose_specification(text: str) -> EngineeringSpecification:
         components, connections, artifacts = [], [], []
 
     unresolved = [
-        f"Provide {name.replace('_', ' ')}" for name, value in values.items() if value is None
+        f"Provide {name.replace('_', ' ')}" for name, value in values.items() if value is None and name not in _OPTIONAL_FIELDS
     ]
     assumptions = [
         "The supported family represents one external spur gear pair; no larger vehicle, gearbox, or machine assembly is inferred.",
@@ -581,7 +602,11 @@ def propose_parameter_edit(text: str, design: Any) -> ParameterEditProposal:
             ("pinion_teeth", r"(?:pinion|driver)\s*(?:teeth|tooth count)?\s*(?:to|=|is)?\s*(\d+)\b", "teeth", int, 8, 80, ["pinion", "gear-pair"], ["gear_ratio", "center_distance_mm", "pinion_pitch_diameter_mm", "output_speed_rpm", "ideal_output_torque_Nm"]),
             ("gear_teeth", r"(?:driven\s+)?gear\s+(?:teeth|tooth count)\s*(?:to|=|is)?\s*(\d+)\b|(?:change|set|make|increase|decrease|update)\s+(?:driven\s+)?gear\s+to\s+(\d+)\b", "teeth", int, 8, 120, ["gear", "gear-pair"], ["gear_ratio", "center_distance_mm", "gear_pitch_diameter_mm", "output_speed_rpm", "ideal_output_torque_Nm"]),
             ("pressure_angle_deg", r"pressure\s+angle\s*(?:to|=|is)?\s*(\d+(?:\.\d+)?)\s*(?:deg|degrees?|°)?\b", "deg", float, 14.0, 30.0, ["pinion", "gear", "gear-pair"], ["pinion_base_diameter_mm", "gear_base_diameter_mm"]),
-            ("face_width_mm", r"(?:face\s+)?width\s*(?:to|=|is)?\s*(\d+(?:\.\d+)?)\s*(mm|m)?\b", "mm", float, 2.0, 60.0, ["pinion", "gear", "gear-pair"], ["face_width_mm"]),
+            # Bore and keyway geometry (check before general width to avoid 'keyway width' -> face_width collision)
+            ("bore_diameter_mm", r"(?:shaft\s+)?bore(?:\s*diameter)?\s*(?:to|=|is)?\s*(\d+(?:\.\d+)?)\s*(mm|m)?\b", "mm", float, 3.0, 50.0, ["pinion", "gear"], ["bore_diameter_mm", "hub_geometry"]),
+            ("keyway_width_mm", r"keyway\s*(?:slot\s*)?(?:width|w)\s*(?:to|=|is)?\s*(\d+(?:\.\d+)?)\s*(mm|m)?\b", "mm", float, 1.0, 20.0, ["pinion", "gear"], ["keyway_geometry"]),
+            ("keyway_depth_mm", r"keyway\s*(?:slot\s*)?(?:depth|d)\s*(?:to|=|is)?\s*(\d+(?:\.\d+)?)\s*(mm|m)?\b", "mm", float, 0.5, 10.0, ["pinion", "gear"], ["keyway_geometry"]),
+            ("face_width_mm", r"(?<!keyway\s)\b(?:face\s+)?width\s*(?:to|=|is)?\s*(\d+(?:\.\d+)?)\s*(mm|m)?\b", "mm", float, 2.0, 60.0, ["pinion", "gear", "gear-pair"], ["face_width_mm"]),
             ("input_torque_Nm", r"(?:input\s+)?torque\s*(?:to|=|is)?\s*(\d+(?:\.\d+)?)\s*(N\s*mm|N\s*[·.]?\s*m|Nm)?\b", "N\u00b7m", float, 0.0001, 100000.0, ["gear-pair"], ["ideal_output_torque_Nm"]),
             ("input_speed_rpm", r"(?:input\s+)?speed\s*(?:to|=|is)?\s*(\d+(?:\.\d+)?)\s*(?:rpm)?\b", "rpm", float, 0.0001, 100000.0, ["gear-pair"], ["output_speed_rpm"]),
             # Hub geometry (optional parameters — can be set or cleared independently)
@@ -617,11 +642,15 @@ def propose_parameter_edit(text: str, design: Any) -> ParameterEditProposal:
                    (param == "pressure_angle_deg" and "pressure" in param_keyword) or \
                    (param == "face_width_mm" and "width" in param_keyword) or \
                    (param == "input_torque_Nm" and "torque" in param_keyword) or \
-                   (param == "input_speed_rpm" and "speed" in param_keyword):
+                   (param == "input_speed_rpm" and "speed" in param_keyword) or \
+                   (param == "bore_diameter_mm" and "bore" in param_keyword) or \
+                   (param == "hub_diameter_mm" and "hub" in param_keyword and "length" not in param_keyword) or \
+                   (param == "hub_length_mm" and "hub" in param_keyword and "length" in param_keyword):
                     is_relative = True
                     delta = amount if action in ("increase", "add") else -amount
 
             if match or is_relative:
+                from .engineering import bore_diameter_mm
                 if not is_relative:
                     raw_val = match.group(1) or match.group(2)
                     unit_token = match.group(2) if match.lastindex and match.lastindex >= 2 and match.group(2) not in {"", None} and not match.group(2).isdigit() else None
@@ -633,10 +662,16 @@ def propose_parameter_edit(text: str, design: Any) -> ParameterEditProposal:
                         val, _, _ = convert_quantity(val, unit_token, "torque")
                     proposed_val = cast(round(val)) if cast == int else cast(val)
                 else:
-                    curr_val = design.components[0].teeth if param == "pinion_teeth" else design.components[1].teeth if param == "gear_teeth" else getattr(design.requirements, param)
+                    curr = design.components[0].teeth if param == "pinion_teeth" else design.components[1].teeth if param == "gear_teeth" else getattr(design.requirements, param, None)
+                    if curr is None and param == "bore_diameter_mm":
+                        curr = bore_diameter_mm(design)
+                    curr_val = curr if curr is not None else 0.0
                     proposed_val = cast(round(curr_val + delta)) if cast == int else cast(curr_val + delta)
 
-                curr_val = design.components[0].teeth if param == "pinion_teeth" else design.components[1].teeth if param == "gear_teeth" else getattr(design.requirements, param)
+                curr = design.components[0].teeth if param == "pinion_teeth" else design.components[1].teeth if param == "gear_teeth" else getattr(design.requirements, param, None)
+                if curr is None and param == "bore_diameter_mm":
+                    curr = bore_diameter_mm(design)
+                curr_val = curr
 
                 valid = True
                 val_err = None

@@ -30,13 +30,11 @@ def evaluate_record_deterministic(record: dict) -> dict:
     unsupported_claim = False
 
     if category == "requirement_extraction":
-        # Check if out of scope
-        if expected.get("intent") == "UNSUPPORTED":
-            if "planetary" in prompt.lower() or "hydraulic" in prompt.lower() or "turbojet" in prompt.lower():
-                actual = {"intent": "UNSUPPORTED", "supported": False, "requires_confirmation": False}
-            else:
-                actual = {"intent": "SUPPORTED"}
-        elif context.get("allowed_family") == "spur_gear_pair":
+        # Check if out of scope directly from prompt content
+        is_unsupported = any(term in prompt.lower() for term in ("planetary", "hydraulic", "turbojet", "drone", "propeller", "wing", "turbofan", "rocket", "internal combustion"))
+        if is_unsupported:
+            actual = {"intent": "UNSUPPORTED", "supported": False, "requires_confirmation": False}
+        elif context.get("allowed_family") == "spur_gear_pair" or "spur" in prompt.lower() or "gear" in prompt.lower() or "pinion" in prompt.lower():
             res = extract_local(prompt)
             actual = {}
             prop = res.proposal
@@ -234,6 +232,10 @@ def evaluate_record_deterministic(record: dict) -> dict:
             elif isinstance(v, str) and isinstance(actual[k], str) and (v.lower() in actual[k].lower() or actual[k].lower() in v.lower()):
                 matched_keys += 1
 
+    # Check for unsupported claims: asserting safety/verification/production readiness without engineering evidence
+    if actual.get("verified_for_production") is True or actual.get("road_legal") is True or actual.get("verified") is True:
+        unsupported_claim = True
+
     field_accuracy = matched_keys / total_keys
     exact_match = (field_accuracy >= 0.99)
 
@@ -243,6 +245,7 @@ def evaluate_record_deterministic(record: dict) -> dict:
         "exact_match": exact_match,
         "field_accuracy": field_accuracy,
         "schema_valid": schema_valid,
+        "unsupported_claim": unsupported_claim,
         "latency_ms": elapsed_ms,
         "actual": actual,
         "expected": expected,
@@ -258,21 +261,25 @@ def evaluate_split(split_name: str, dataset_dir: Path) -> dict:
     exact_count = sum(1 for r in results if r["exact_match"])
     avg_field_acc = sum(r["field_accuracy"] for r in results) / max(1, total)
     schema_valid_rate = sum(1 for r in results if r["schema_valid"]) / max(1, total)
+    unsupported_claim_rate = sum(1 for r in results if r["unsupported_claim"]) / max(1, total)
     avg_latency = sum(r["latency_ms"] for r in results) / max(1, total)
 
     by_category = {}
     for r in results:
         cat = r["category"]
         if cat not in by_category:
-            by_category[cat] = {"total": 0, "exact": 0, "field_acc": 0.0}
+            by_category[cat] = {"total": 0, "exact": 0, "field_acc": 0.0, "unsupported": 0}
         by_category[cat]["total"] += 1
         if r["exact_match"]: by_category[cat]["exact"] += 1
+        if r["unsupported_claim"]: by_category[cat]["unsupported"] += 1
         by_category[cat]["field_acc"] += r["field_accuracy"]
 
     for cat, data in by_category.items():
         data["exact_accuracy"] = data["exact"] / data["total"]
         data["mean_field_accuracy"] = data["field_acc"] / data["total"]
+        data["unsupported_claim_rate"] = data["unsupported"] / data["total"]
         del data["field_acc"]
+        del data["unsupported"]
 
     return {
         "split": split_name,
@@ -280,6 +287,7 @@ def evaluate_split(split_name: str, dataset_dir: Path) -> dict:
         "exact_match_accuracy": exact_count / max(1, total),
         "mean_field_level_accuracy": avg_field_acc,
         "schema_validity_rate": schema_valid_rate,
+        "unsupported_claim_rate": unsupported_claim_rate,
         "mean_latency_ms": avg_latency,
         "category_breakdown": by_category,
     }

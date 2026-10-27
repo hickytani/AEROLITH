@@ -78,13 +78,14 @@ def response(design: Design | VehicleDesign, assembly_evidence=None) -> dict:
               "assembly_verification": assembly_evidence if assembly_evidence is not None else build_assembly_evidence(design)}
     if design.family == "spur_gear_pair":
         hub_refs = ["hub_diameter_mm", "hub_length_mm"] if getattr(design.requirements, "hub_diameter_mm", None) is not None else []
+        bore_refs = (["bore_diameter_mm"] if getattr(design.requirements, "bore_diameter_mm", None) is not None else []) + (["keyway_width_mm", "keyway_depth_mm"] if getattr(design.requirements, "keyway_width_mm", None) is not None else [])
         component_refs = {
-            "pinion": ["pinion_teeth", "module_mm", "face_width_mm", "pressure_angle_deg"] + hub_refs,
-            "gear": ["gear_teeth", "module_mm", "face_width_mm", "pressure_angle_deg"],
+            "pinion": ["pinion_teeth", "module_mm", "face_width_mm", "pressure_angle_deg"] + hub_refs + bore_refs,
+            "gear": ["gear_teeth", "module_mm", "face_width_mm", "pressure_angle_deg"] + bore_refs,
             "gear-pair": ["input_torque_Nm", "input_speed_rpm", "gear_ratio"],
         }
         values = {**design.requirements.model_dump(exclude_none=True), "pinion_teeth": design.components[0].teeth, "gear_teeth": design.components[1].teeth}
-        units = {"pinion_teeth":"teeth","gear_teeth":"teeth","gear_ratio":"ratio","module_mm":"mm","face_width_mm":"mm","pressure_angle_deg":"deg","input_torque_Nm":"N·m","input_speed_rpm":"rpm","hub_diameter_mm":"mm","hub_length_mm":"mm"}
+        units = {"pinion_teeth":"teeth","gear_teeth":"teeth","gear_ratio":"ratio","module_mm":"mm","face_width_mm":"mm","pressure_angle_deg":"deg","input_torque_Nm":"N·m","input_speed_rpm":"rpm","hub_diameter_mm":"mm","hub_length_mm":"mm","bore_diameter_mm":"mm","keyway_width_mm":"mm","keyway_depth_mm":"mm"}
         trace = {name:{"canonical_target":f"requirements.{name}" if name not in {"pinion_teeth","gear_teeth"} else f"components.{name.removesuffix('_teeth')}.teeth","value":value,"unit":units.get(name, "mm"),"source":design.requirement_sources.get(name,"derived" if name=="gear_ratio" else "assumed"),"evidence":design.requirement_evidence.get(name),"quantity":design.parameter_quantities[name].model_dump(mode="json")} for name,value in values.items() if name in design.parameter_quantities}
         for item in trace.values():
             evidence=item["evidence"]
@@ -400,7 +401,7 @@ def initialize_project(request: FamilyInitializationRequest):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     current = store.load()
     candidate = family.default_design()
-    candidate.id = current.id
+    candidate.id = f"local-{uuid.uuid4().hex[:12]}"
     candidate.parameter_records = {}
     candidate.revision = current.revision + 1
     candidate.history = [*current.history, {"revision": current.revision, "changed_at": current.updated_at, "design": current.model_dump(mode="json")}]
@@ -411,7 +412,7 @@ def initialize_project(request: FamilyInitializationRequest):
     else:
         candidate = Design.model_validate(candidate.model_dump(mode="json"))
     family.validate_state(candidate)
-    save_candidate_at_revision(candidate, current.revision)
+    store.save(candidate)
     return response(candidate)
 
 
@@ -419,13 +420,12 @@ def initialize_project(request: FamilyInitializationRequest):
 def restore_demo_project():
     current = store.load()
     candidate = store.default_design()
-    candidate.id = current.id
     candidate.parameter_records = {}
     candidate.revision = current.revision + 1
     candidate.history = [*current.history, {"revision": current.revision, "changed_at": current.updated_at, "design": current.model_dump(mode="json")}]
     candidate.updated_at = datetime.now(timezone.utc).isoformat()
     candidate = Design.model_validate(candidate.model_dump(mode="json"))
-    save_candidate_at_revision(candidate, current.revision)
+    store.save(candidate)
     return response(candidate)
 
 
@@ -508,11 +508,14 @@ def edit_project(edit: EditRequest):
     candidate.parameter_quantities = {}
     candidate.parameter_records = {}
     # Validate the complete candidate (including cross-field invariants) before persistence.
-    candidate = Design.model_validate(candidate.model_dump(mode="json"))
-    # Generate and verify the full candidate geometry before persistence. If
-    # profile construction or a geometry-backed check fails, the old revision
-    # and its artifacts remain canonical.
-    assembly_evidence = build_assembly_evidence(candidate)
+    try:
+        candidate = Design.model_validate(candidate.model_dump(mode="json"))
+        # Generate and verify the full candidate geometry before persistence. If
+        # profile construction or a geometry-backed check fails, the old revision
+        # and its artifacts remain canonical.
+        assembly_evidence = build_assembly_evidence(candidate)
+    except (ValueError, ValidationError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     save_candidate_at_revision(candidate, current.revision)
     return response(candidate, assembly_evidence)
 
