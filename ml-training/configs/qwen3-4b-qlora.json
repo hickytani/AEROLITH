@@ -3,7 +3,7 @@
   "experiment_id": "qwen3-4b-aeropkmech-smoke",
   "base_model": "Qwen/Qwen3-4B",
   "base_revision": "1cfa9a7208912126459214e8b04321603b3df60c",
-  "dataset_version": "engineering-v2.0.0",
+  "dataset_version": "engineering-v2.1.0",
   "dataset_path": "../../data/learning/engineering-v2",
   "train_split": "train",
   "validation_split": "validation",

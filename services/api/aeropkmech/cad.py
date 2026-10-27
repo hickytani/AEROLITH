@@ -203,8 +203,15 @@ def gear_profile_wire(teeth: int, module: float, pressure_angle_deg: float = 20.
 def gear_solid(
     teeth: int, module: float, width: float, bore_diameter: float,
     pressure_angle_deg: float = 20.0,
+    hub_diameter_mm: float | None = None,
+    hub_length_mm: float | None = None,
 ) -> cq.Workplane:
-    """Build a real OCCT solid with spline-interpolated involute gear flanks."""
+    """Build a real OCCT solid with spline-interpolated involute gear flanks.
+
+    When hub_diameter_mm and hub_length_mm are both supplied, a cylindrical
+    shaft hub boss is fused to the +Z face of the gear via Boolean union.  The
+    hub outside diameter must exceed the bore (enforced by domain validation).
+    """
     if not math.isfinite(width) or not 2 <= width <= 60:
         raise ValueError("Gear face width must be finite and between 2 and 60 mm.")
     if not math.isfinite(bore_diameter) or bore_diameter < 0:
@@ -214,9 +221,23 @@ def gear_solid(
     solid = cq.Workplane("XY").newObject([solid_shape])
     if bore_diameter > 0:
         solid = solid.faces(">Z").workplane().hole(bore_diameter)
+    # Optional mounting hub: cylindrical boss fused to +Z face
+    if hub_diameter_mm is not None and hub_length_mm is not None:
+        hub_z_offset = width / 2  # flush with +Z gear face
+        hub = (
+            cq.Workplane("XY")
+            .workplane(offset=hub_z_offset)
+            .circle(hub_diameter_mm / 2)
+            .extrude(hub_length_mm)
+        )
+        if bore_diameter > 0:
+            hub = hub.faces(">Z").workplane().hole(bore_diameter)
+        solid = cq.Workplane("XY").newObject([solid.val().fuse(hub.val())])
     if not solid.val().isValid() or not math.isfinite(solid.val().Volume()) or solid.val().Volume() <= 0:
         raise ValueError("Involute gear profile did not produce a valid positive-volume solid.")
     return solid
+
+
 
 
 def build_assembly(design: Design) -> cq.Assembly:
@@ -226,8 +247,9 @@ def build_assembly(design: Design) -> cq.Assembly:
     d1, d2 = module * p.teeth, module * g.teeth
     center = (d1 + d2) / 2
     bore = bore_diameter_mm(design)
-    pinion = gear_solid(p.teeth, module, width, bore, req.pressure_angle_deg)
-    gear = gear_solid(g.teeth, module, width, bore, req.pressure_angle_deg)
+    hub_d, hub_l = req.hub_diameter_mm, req.hub_length_mm
+    pinion = gear_solid(p.teeth, module, width, bore, req.pressure_angle_deg, hub_d, hub_l)
+    gear = gear_solid(g.teeth, module, width, bore, req.pressure_angle_deg, hub_d, hub_l)
     assembly = cq.Assembly(name=f"spur_gear_pair_r{design.revision}")
     assembly.add(pinion, name="pinion", color=cq.Color(0.0, 0.66, 0.78))
     # Align tooth and gap at the mesh line for a clearer educational assembly view.
@@ -238,6 +260,7 @@ def build_assembly(design: Design) -> cq.Assembly:
         color=cq.Color(0.61, 0.68, 0.72),
     )
     return assembly
+
 
 
 def export_stl(design: Design, target: Path) -> None:
@@ -255,10 +278,12 @@ def export_step(design: Design, target: Path) -> None:
 def export_component_stl(design: Design, component_id: str, target: Path) -> None:
     req = design.requirements
     component = next(item for item in design.components if item.id == component_id)
-    solid = gear_solid(component.teeth, req.module_mm, req.face_width_mm, bore_diameter_mm(design), req.pressure_angle_deg)
+    hub_d, hub_l = req.hub_diameter_mm, req.hub_length_mm
+    solid = gear_solid(component.teeth, req.module_mm, req.face_width_mm, bore_diameter_mm(design), req.pressure_angle_deg, hub_d, hub_l)
     if component_id == "gear":
         center = req.module_mm * (design.components[0].teeth + component.teeth) / 2
         solid = solid.rotate((0, 0, 0), (0, 0, 1), 180 / component.teeth).translate((center, 0, 0))
     solid.val().exportStl(
         str(target), tolerance=0.08, angularTolerance=0.15, ascii=False, relative=True, parallel=False
     )
+

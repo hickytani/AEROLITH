@@ -5,6 +5,8 @@
 node_modules/
 .next/
 .pytest-tmp/
+pytest_temp/
+.pytest_cache/
 __pycache__/
 *.py[cod]
 artifacts/*

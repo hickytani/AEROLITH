@@ -273,10 +273,20 @@ def _gear_assembly(design: Design) -> AssemblyEvidence:
         profile_measurements[component.id]={"accepted_tooth_count":component.teeth,"expected_root_radius_mm":root,"observed_root_radius_mm":root_observed,"expected_tip_radius_mm":tip,"observed_tip_radius_mm":tip_observed,"sampled_involute_flank_edge_count":sampled_flank_edges,"sampled_involute_profile_points":len(flank_residuals),"maximum_involute_angular_residual_rad":max_flank_residual}
         base_circle_measurements[component.id]={"expected_base_radius_mm":base_radius,"observed_profile_start_radius_mm":min(start_vertices, default=None),"expected_profile_start_radius_mm":flank_start,"observed_profile_start_vertex_count":len(start_vertices)}
     ratio = g.teeth / p.teeth
-    gear_values = {**design.requirements.model_dump(), "pinion_teeth":p.teeth,"gear_teeth":g.teeth}
-    gear_units = {"pinion_teeth":"teeth","gear_teeth":"teeth","gear_ratio":"ratio","module_mm":"mm","face_width_mm":"mm","input_torque_Nm":"N·m","input_speed_rpm":"rpm"}
-    gear_units["pressure_angle_deg"] = "deg"
-    requirements = {name:{"canonical_target":f"requirements.{name}" if name not in {"pinion_teeth","gear_teeth"} else f"components.{name.removesuffix('_teeth')}.teeth","value":value,"unit":gear_units[name],"source":design.requirement_sources.get(name,"derived" if name=="gear_ratio" else "assumed"),"evidence":design.requirement_evidence.get(name)} for name,value in gear_values.items()}
+    gear_values = {**design.requirements.model_dump(exclude_none=True), "pinion_teeth":p.teeth,"gear_teeth":g.teeth}
+    gear_units = {
+        "pinion_teeth": "teeth",
+        "gear_teeth": "teeth",
+        "gear_ratio": "ratio",
+        "module_mm": "mm",
+        "face_width_mm": "mm",
+        "input_torque_Nm": "N·m",
+        "input_speed_rpm": "rpm",
+        "pressure_angle_deg": "deg",
+        "hub_diameter_mm": "mm",
+        "hub_length_mm": "mm",
+    }
+    requirements = {name:{"canonical_target":f"requirements.{name}" if name not in {"pinion_teeth","gear_teeth"} else f"components.{name.removesuffix('_teeth')}.teeth","value":value,"unit":gear_units.get(name, "mm"),"source":design.requirement_sources.get(name,"derived" if name=="gear_ratio" else "assumed"),"evidence":design.requirement_evidence.get(name)} for name,value in gear_values.items()}
     for trace in requirements.values():
         evidence = trace["evidence"]
         if evidence and design.source_prompt:

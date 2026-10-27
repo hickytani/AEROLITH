@@ -25,6 +25,11 @@ class ProposedRequirements(BaseModel):
     module_mm: float | None = Field(default=None, ge=0.5, le=6)
     face_width_mm: float | None = Field(default=None, ge=2, le=60)
     pressure_angle_deg: float | None = Field(default=20, ge=14, le=30)
+    # Optional hub geometry — absent from 'missing' list (they are optional, not required for a valid spec)
+    hub_diameter_mm: float | None = Field(default=None, ge=4, le=60)
+    hub_length_mm: float | None = Field(default=None, ge=2, le=60)
+
+
 
 
 class Extraction(BaseModel):
@@ -182,11 +187,18 @@ class NoModelProvider:
 
 def _extract_length_mm(text: str, label_pattern: str) -> tuple[float | None, list[float], list[str], str | None]:
     """Normalize explicit module/width lengths to mm while retaining source text."""
-    expression = re.compile(
-        rf"{label_pattern}\s*(?:of|is|=|:)?\s*(\d+(?:\.\d+)?)\s*([a-zA-Z]+)\b",
-        re.IGNORECASE,
-    )
-    matches = list(expression.finditer(text))
+    expressions = [
+        re.compile(rf"{label_pattern}\s*(?:of|is|=|:)?\s*(\d+(?:\.\d+)?)\s*([a-zA-Z]+)\b", re.IGNORECASE),
+        re.compile(rf"(\d+(?:\.\d+)?)\s*([a-zA-Z]+)\s*(?:of\s+)?{label_pattern}\b", re.IGNORECASE),
+    ]
+    matches = []
+    seen_spans = set()
+    for expr in expressions:
+        for match in expr.finditer(text):
+            span = (match.start(), match.end())
+            if span not in seen_spans:
+                seen_spans.add(span)
+                matches.append(match)
     normalized: list[float] = []
     unsupported: list[str] = []
     literal: str | None = None
@@ -252,8 +264,8 @@ def extract_local(text: str) -> Extraction:
 
     patterns = {
         "gear_ratio": (r"(?:gear\s+)?ratio\s*(?:of|is|=|:)?\s*(\d+(?:\.\d+)?)\s*(?::\s*1)?\b", float),
-        "input_torque_Nm": (r"(?:input\s+)?torque\s*(?:of|is|=|:)?\s*(\d+(?:\.\d+)?)\s*(N\s*mm|N\s*[·.]?\s*m|Nm)\b", float),
-        "input_speed_rpm": (r"(?:(?:input\s+)?speed\s*(?:of|is|=|:)?|\bat)\s*(\d+(?:\.\d+)?)\s*rpm\b", float),
+        "input_torque_Nm": (r"(?:(?:input\s+)?torque\s*(?:of|is|=|:)?\s*(\d+(?:\.\d+)?)\s*(N\s*mm|N\s*[·.*]?\s*m|Nm)\b|(\d+(?:\.\d+)?)\s*(N\s*mm|N\s*[·.*]?\s*m|Nm)\s*(?:of\s+)?(?:input\s+)?torque\b)", None),
+        "input_speed_rpm": (r"(?:(?:input\s+)?speed\s*(?:of|is|=|:)?|\bat)?\s*(\d+(?:\.\d+)?)\s*rpm\b", float),
         "pressure_angle_deg": (r"pressure\s+angle\s*(?:of|is|=|:)?\s*(\d+(?:\.\d+)?)\s*(?:degrees?|deg|°)?(?!\w)(?!\s*(?:mm|radians?|rad)\b)", float),
     }
     for key, (pattern, convert) in patterns.items():
@@ -263,10 +275,14 @@ def extract_local(text: str) -> Extraction:
         else:
             parsed = []
             for match in matches:
-                value = convert(match.group(1))
                 if key == "input_torque_Nm":
-                    value, _, _ = convert_quantity(value, match.group(2), "torque")
-                parsed.append(value)
+                    raw_val = match.group(1) or match.group(3)
+                    raw_unit = match.group(2) or match.group(4)
+                    val = float(raw_val)
+                    val, _, _ = convert_quantity(val, raw_unit, "torque")
+                    parsed.append(val)
+                else:
+                    parsed.append(convert(match.group(1)))
             fields[key] = parsed[0]
             evidence[key] = matches[0].group(0)
             if any(abs(value - parsed[0]) > 1e-9 for value in parsed[1:]):
@@ -281,6 +297,17 @@ def extract_local(text: str) -> Extraction:
             conflicts.append(f"Unsupported length unit for {key}: " + "; ".join(unsupported_units))
         if len(normalized) > 1 and any(abs(item - normalized[0]) > 1e-9 for item in normalized[1:]):
             conflicts.append(f"Conflicting explicit values for {key} after conversion to mm.")
+
+    # Hub geometry extraction (optional parameters — missing is not an error)
+    for key, label_pattern in (("hub_diameter_mm", r"hub\s*(?:outside\s*)?(?:diameter|OD)"), ("hub_length_mm", r"hub\s*(?:length|extension|height)")):
+        value, normalized, unsupported_units, literal = _extract_length_mm(text, label_pattern)
+        if value is not None:
+            fields[key] = value
+            if literal:
+                evidence[key] = literal
+        if unsupported_units:
+            conflicts.append(f"Unsupported length unit for {key}: " + "; ".join(unsupported_units))
+
 
     if fields["pinion_teeth"] and fields["gear_teeth"]:
         ratio_from_teeth = fields["gear_teeth"] / fields["pinion_teeth"]
@@ -303,7 +330,9 @@ def extract_local(text: str) -> Extraction:
             conflicts.append(f"{name} value {value!r} is outside the supported input range ({issue['msg']}).")
             fields[name] = None
         proposal = ProposedRequirements.model_validate(fields)
-    missing = [key for key, value in proposal.model_dump().items() if value is None]
+    _OPTIONAL_FIELDS = {"hub_diameter_mm", "hub_length_mm"}
+    missing = [key for key, value in proposal.model_dump().items() if value is None and key not in _OPTIONAL_FIELDS]
+
     return Extraction(
         provider="deterministic-patterns-v1",
         parsed=not missing and not conflicts,
@@ -516,4 +545,258 @@ async def extract(text: str, provider: RequirementProvider | None = None) -> Ext
         conflicts=local.conflicts,
         evidence=local.evidence,
         derivations=local.derivations,
+    )
+
+
+class ParameterEditProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request: str
+    family: Literal["spur_gear_pair", "electric_vehicle"]
+    expected_revision: int
+    matched: bool
+    parameter_name: str | None = None
+    canonical_target: str | None = None
+    old_value: float | int | None = None
+    proposed_value: float | int | None = None
+    unit: str | None = None
+    evidence: str | None = None
+    affected_components: list[str] = Field(default_factory=list)
+    affected_dependencies: list[str] = Field(default_factory=list)
+    validation_passed: bool = True
+    validation_error: str | None = None
+    requires_confirmation: bool = True
+    can_commit: bool = False
+    explanation: str
+
+
+def propose_parameter_edit(text: str, design: Any) -> ParameterEditProposal:
+    """Parse a natural-language parameter edit into a reviewable, revision-safe proposal."""
+    family = design.family
+    revision = design.revision
+
+    if family == "spur_gear_pair":
+        # Check relative or direct edit patterns
+        gear_patterns = [
+            ("module_mm", r"\bmodule\s*(?:to|=|is)?\s*(\d+(?:\.\d+)?)\s*(mm|m)?\b", "mm", float, 0.5, 6.0, ["pinion", "gear", "gear-pair"], ["center_distance_mm", "pinion_pitch_diameter_mm", "gear_pitch_diameter_mm", "bore_diameter_mm"]),
+            ("pinion_teeth", r"(?:pinion|driver)\s*(?:teeth|tooth count)?\s*(?:to|=|is)?\s*(\d+)\b", "teeth", int, 8, 80, ["pinion", "gear-pair"], ["gear_ratio", "center_distance_mm", "pinion_pitch_diameter_mm", "output_speed_rpm", "ideal_output_torque_Nm"]),
+            ("gear_teeth", r"(?:driven\s+)?gear\s+(?:teeth|tooth count)\s*(?:to|=|is)?\s*(\d+)\b|(?:change|set|make|increase|decrease|update)\s+(?:driven\s+)?gear\s+to\s+(\d+)\b", "teeth", int, 8, 120, ["gear", "gear-pair"], ["gear_ratio", "center_distance_mm", "gear_pitch_diameter_mm", "output_speed_rpm", "ideal_output_torque_Nm"]),
+            ("pressure_angle_deg", r"pressure\s+angle\s*(?:to|=|is)?\s*(\d+(?:\.\d+)?)\s*(?:deg|degrees?|°)?\b", "deg", float, 14.0, 30.0, ["pinion", "gear", "gear-pair"], ["pinion_base_diameter_mm", "gear_base_diameter_mm"]),
+            ("face_width_mm", r"(?:face\s+)?width\s*(?:to|=|is)?\s*(\d+(?:\.\d+)?)\s*(mm|m)?\b", "mm", float, 2.0, 60.0, ["pinion", "gear", "gear-pair"], ["face_width_mm"]),
+            ("input_torque_Nm", r"(?:input\s+)?torque\s*(?:to|=|is)?\s*(\d+(?:\.\d+)?)\s*(N\s*mm|N\s*[·.]?\s*m|Nm)?\b", "N\u00b7m", float, 0.0001, 100000.0, ["gear-pair"], ["ideal_output_torque_Nm"]),
+            ("input_speed_rpm", r"(?:input\s+)?speed\s*(?:to|=|is)?\s*(\d+(?:\.\d+)?)\s*(?:rpm)?\b", "rpm", float, 0.0001, 100000.0, ["gear-pair"], ["output_speed_rpm"]),
+            # Hub geometry (optional parameters — can be set or cleared independently)
+            ("hub_diameter_mm", r"hub\s*(?:outside\s*)?(?:diameter|OD)\s*(?:to|=|is)?\s*(\d+(?:\.\d+)?)\s*(mm|m)?\b", "mm", float, 4.0, 60.0, ["pinion", "gear"], ["hub_geometry"]),
+            ("hub_length_mm", r"hub\s*(?:length|extension|height)\s*(?:to|=|is)?\s*(\d+(?:\.\d+)?)\s*(mm|m)?\b", "mm", float, 2.0, 60.0, ["pinion", "gear"], ["hub_geometry"]),
+        ]
+
+
+        # Check relative edit: "Increase pinion by 2 teeth" OR "Add 2 teeth to pinion"
+        rel_match1 = re.search(r"(increase|decrease|add|subtract)\s+([a-zA-Z\s]+?)\s+(?:by\s+)?(\d+(?:\.\d+)?)\s*([a-zA-Z°·]+)?\b", text, re.IGNORECASE)
+        rel_match2 = re.search(r"(add|subtract|increase|decrease)\s+(\d+(?:\.\d+)?)\s*([a-zA-Z°·]+)?\s+(?:to|from)\s+([a-zA-Z\s]+)\b", text, re.IGNORECASE)
+
+        for param, pattern, default_unit, cast, min_val, max_val, affected_comps, deps in gear_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            is_relative = False
+            delta = 0.0
+            evidence = ""
+            if not match and (rel_match1 or rel_match2):
+                if rel_match1:
+                    action = rel_match1.group(1).lower()
+                    param_keyword = rel_match1.group(2).strip().lower()
+                    amount = float(rel_match1.group(3))
+                    evidence = rel_match1.group(0)
+                else:
+                    action = rel_match2.group(1).lower()
+                    amount = float(rel_match2.group(2))
+                    param_keyword = rel_match2.group(4).strip().lower()
+                    evidence = rel_match2.group(0)
+
+                if (param == "pinion_teeth" and "pinion" in param_keyword) or \
+                   (param == "gear_teeth" and "gear" in param_keyword and "pinion" not in param_keyword) or \
+                   (param == "module_mm" and "module" in param_keyword) or \
+                   (param == "pressure_angle_deg" and "pressure" in param_keyword) or \
+                   (param == "face_width_mm" and "width" in param_keyword) or \
+                   (param == "input_torque_Nm" and "torque" in param_keyword) or \
+                   (param == "input_speed_rpm" and "speed" in param_keyword):
+                    is_relative = True
+                    delta = amount if action in ("increase", "add") else -amount
+
+            if match or is_relative:
+                if not is_relative:
+                    raw_val = match.group(1) or match.group(2)
+                    unit_token = match.group(2) if match.lastindex and match.lastindex >= 2 and match.group(2) not in {"", None} and not match.group(2).isdigit() else None
+                    evidence = match.group(0)
+                    val = float(raw_val)
+                    if unit_token and unit_token.lower() == "m" and default_unit == "mm":
+                        val, _, _ = convert_quantity(val, "m", "length")
+                    elif unit_token and "mm" in unit_token.lower() and default_unit == "N·m":
+                        val, _, _ = convert_quantity(val, unit_token, "torque")
+                    proposed_val = cast(round(val)) if cast == int else cast(val)
+                else:
+                    curr_val = design.components[0].teeth if param == "pinion_teeth" else design.components[1].teeth if param == "gear_teeth" else getattr(design.requirements, param)
+                    proposed_val = cast(round(curr_val + delta)) if cast == int else cast(curr_val + delta)
+
+                curr_val = design.components[0].teeth if param == "pinion_teeth" else design.components[1].teeth if param == "gear_teeth" else getattr(design.requirements, param)
+
+                valid = True
+                val_err = None
+                if min_val is not None and proposed_val < min_val:
+                    valid = False
+                    val_err = f"{param} value {proposed_val} is below minimum allowed {min_val} {default_unit}."
+                elif max_val is not None and proposed_val > max_val:
+                    valid = False
+                    val_err = f"{param} value {proposed_val} exceeds maximum allowed {max_val} {default_unit}."
+
+                return ParameterEditProposal(
+                    request=text,
+                    family="spur_gear_pair",
+                    expected_revision=revision,
+                    matched=True,
+                    parameter_name=param,
+                    canonical_target=f"requirements.{param}" if param not in {"pinion_teeth", "gear_teeth"} else f"components.{param.removesuffix('_teeth')}.teeth",
+                    old_value=curr_val,
+                    proposed_value=proposed_val,
+                    unit=default_unit,
+                    evidence=evidence,
+                    affected_components=affected_comps,
+                    affected_dependencies=deps,
+                    validation_passed=valid,
+                    validation_error=val_err,
+                    requires_confirmation=True,
+                    can_commit=valid,
+                    explanation=f"Propose changing {param} from {curr_val} {default_unit} to {proposed_val} {default_unit}. Affected components: {', '.join(affected_comps)}.",
+                )
+
+        return ParameterEditProposal(
+            request=text,
+            family="spur_gear_pair",
+            expected_revision=revision,
+            matched=False,
+            validation_passed=False,
+            requires_confirmation=True,
+            can_commit=False,
+            explanation="Could not identify a supported spur gear parameter edit in this request. Supported parameters: pinion teeth (8..80), gear teeth (8..120), module (0.5..6 mm), face width (2..60 mm), pressure angle (14..30 deg), input torque, input speed.",
+        )
+
+    # electric_vehicle family
+    if "battery" in text.lower() and ("rearward" in text.lower() or "forward" in text.lower() or "move" in text.lower()):
+        return ParameterEditProposal(
+            request=text,
+            family="electric_vehicle",
+            expected_revision=revision,
+            matched=True,
+            parameter_name=None,
+            validation_passed=False,
+            requires_confirmation=True,
+            can_commit=False,
+            explanation="The battery pack envelope placement in electric_vehicle@1.0 is derived from wheelbase, ground clearance, and frame rail geometry. To shift packaging envelopes, adjust wheelbase_mm or ground_clearance_mm directly.",
+        )
+
+    from .automotive import VEHICLE_EDITABLE_PARAMETERS, propagate_vehicle_edits
+
+    ev_patterns = [
+        ("wheelbase_mm", r"wheelbase\s*(?:to|=|is)?\s*(\d+(?:\.\d+)?)\s*(mm|m)?\b", "mm", 1000.0, 8000.0),
+        ("overall_length_mm", r"(?:overall\s+)?length\s*(?:to|=|is)?\s*(\d+(?:\.\d+)?)\s*(mm|m)\b", "mm", 1500.0, 12000.0),
+        ("overall_width_mm", r"(?:overall\s+)?width\s*(?:to|=|is)?\s*(\d+(?:\.\d+)?)\s*(mm|m)\b", "mm", 800.0, 4000.0),
+        ("front_track_mm", r"front\s+track\s*(?:to|=|is)?\s*(\d+(?:\.\d+)?)\s*(mm|m)?\b", "mm", 800.0, 3000.0),
+        ("rear_track_mm", r"rear\s+track\s*(?:to|=|is)?\s*(\d+(?:\.\d+)?)\s*(mm|m)?\b", "mm", 800.0, 3000.0),
+        ("body_height_mm", r"(?:body\s+)?height\s*(?:to|=|is)?\s*(\d+(?:\.\d+)?)\s*(mm|m)?\b", "mm", 900.0, 3000.0),
+        ("ground_clearance_mm", r"ground\s+clearance\s*(?:to|=|is)?\s*(\d+(?:\.\d+)?)\s*(mm|m)?\b", "mm", 50.0, 500.0),
+        ("tire_outer_diameter_mm", r"(?:tire|wheel)\s*(?:outer\s+)?diameter\s*(?:to|=|is)?\s*(\d+(?:\.\d+)?)\s*(mm|m)?\b", "mm", 300.0, 1500.0),
+        ("tire_width_mm", r"tire\s+width\s*(?:to|=|is)?\s*(\d+(?:\.\d+)?)\s*(mm|m)?\b", "mm", 100.0, 600.0),
+        ("frame_rail_width_mm", r"frame\s+rail\s+width\s*(?:to|=|is)?\s*(\d+(?:\.\d+)?)\s*(mm|m)?\b", "mm", 20.0, 300.0),
+        ("frame_rail_height_mm", r"frame\s+rail\s+height\s*(?:to|=|is)?\s*(\d+(?:\.\d+)?)\s*(mm|m)?\b", "mm", 20.0, 400.0),
+        ("body_width_mm", r"body\s+width\s*(?:to|=|is)?\s*(\d+(?:\.\d+)?)\s*(mm|m)?\b", "mm", 800.0, 4000.0),
+        ("body_length_mm", r"body\s+length\s*(?:to|=|is)?\s*(\d+(?:\.\d+)?)\s*(mm|m)?\b", "mm", 1000.0, 12000.0),
+    ]
+
+    rel_match = re.search(r"(increase|decrease|add|subtract|move)\s+([a-zA-Z\s]+?)\s+(?:by\s+)?([+-]?\d+(?:\.\d+)?)\s*(mm|m)?\b", text, re.IGNORECASE)
+
+    for param, pattern, default_unit, min_val, max_val in ev_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        is_relative = False
+        delta = 0.0
+        if not match and rel_match:
+            keyword = rel_match.group(2).strip().lower()
+            action = rel_match.group(1).lower()
+            amount = float(rel_match.group(3))
+            unit_tok = rel_match.group(4)
+            if unit_tok and unit_tok.lower() == "m":
+                amount *= 1000.0
+            if (param == "wheelbase_mm" and "wheelbase" in keyword) or \
+               (param == "overall_length_mm" and "length" in keyword and "body" not in keyword) or \
+               (param == "overall_width_mm" and "width" in keyword and "body" not in keyword and "tire" not in keyword and "rail" not in keyword and "track" not in keyword) or \
+               (param == "front_track_mm" and "front track" in keyword) or \
+               (param == "rear_track_mm" and "rear track" in keyword) or \
+               (param == "ground_clearance_mm" and "clearance" in keyword) or \
+               (param == "body_height_mm" and "height" in keyword and "rail" not in keyword) or \
+               (param == "tire_outer_diameter_mm" and ("tire" in keyword or "wheel" in keyword) and "width" not in keyword):
+                is_relative = True
+                delta = amount if action in ("increase", "add") else -amount
+                evidence = rel_match.group(0)
+
+        if match or is_relative:
+            if not is_relative:
+                raw_val = match.group(1)
+                unit_token = match.group(2) if match.lastindex and match.lastindex >= 2 else None
+                evidence = match.group(0)
+                val = float(raw_val)
+                if unit_token and unit_token.lower() == "m":
+                    val *= 1000.0
+                proposed_val = round(val, 2)
+            else:
+                curr_val = getattr(design.requirements, param).value
+                proposed_val = round(curr_val + delta, 2)
+
+            curr_val = getattr(design.requirements, param).value
+            metadata = VEHICLE_EDITABLE_PARAMETERS.get(param, {})
+            affected_deps = metadata.get("dependencies", [])
+
+            # Check boundary validity and candidate cross-geometry consistency
+            valid = True
+            val_err = None
+            if min_val is not None and proposed_val < min_val:
+                valid = False
+                val_err = f"{param} value {proposed_val} is below minimum {min_val} mm."
+            elif max_val is not None and proposed_val > max_val:
+                valid = False
+                val_err = f"{param} value {proposed_val} exceeds maximum {max_val} mm."
+            else:
+                try:
+                    candidate, propagated = propagate_vehicle_edits(design, {param: proposed_val})
+                    propagated_deps = [dep for deps in propagated.values() for dep in (deps if isinstance(deps, list) else [deps])]
+                    affected_deps = sorted(set(affected_deps + propagated_deps))
+                except Exception as exc:
+                    valid = False
+                    val_err = str(exc)
+
+            return ParameterEditProposal(
+                request=text,
+                family="electric_vehicle",
+                expected_revision=revision,
+                matched=True,
+                parameter_name=param,
+                canonical_target=f"requirements.{param}",
+                old_value=curr_val,
+                proposed_value=proposed_val,
+                unit=default_unit,
+                evidence=evidence,
+                affected_components=affected_deps,
+                affected_dependencies=affected_deps,
+                validation_passed=valid,
+                validation_error=val_err,
+                requires_confirmation=True,
+                can_commit=valid,
+                explanation=f"Propose changing EV {param} from {curr_val} mm to {proposed_val} mm. Affected components/dependencies: {', '.join(affected_deps)}.",
+            )
+
+    return ParameterEditProposal(
+        request=text,
+        family="electric_vehicle",
+        expected_revision=revision,
+        matched=False,
+        validation_passed=False,
+        requires_confirmation=True,
+        can_commit=False,
+        explanation="Could not identify a supported EV packaging parameter edit in this request. Supported parameters include: wheelbase (1000..8000 mm), overall length, overall width, front/rear tracks, ground clearance, tire diameter, tire width, body height.",
     )

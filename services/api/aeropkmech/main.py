@@ -40,9 +40,9 @@ from .families import (
     get_family,
     list_families,
 )
-from .intelligence import extract, propose_specification
+from .intelligence import ParameterEditProposal, extract, propose_parameter_edit, propose_specification
 from .model_platform import (
-    ComponentAnswer, ModelRegistry, ModelState, ModelUnavailable, OllamaProvider,
+    ComponentAnswer, InferenceStatus, ModelRegistry, ModelState, ModelUnavailable, OllamaProvider,
     OllamaRequirementProvider, component_context, configured_runtime_model, redact_sensitive, validate_split_files, validate_tool_proposal,
 )
 from .verification import VerificationState, summarize
@@ -77,10 +77,15 @@ def response(design: Design | VehicleDesign, assembly_evidence=None) -> dict:
     result = {**design.model_dump(mode="json"), "derived": family.calculate(design), "verification": verification,
               "assembly_verification": assembly_evidence if assembly_evidence is not None else build_assembly_evidence(design)}
     if design.family == "spur_gear_pair":
-        component_refs = {"pinion": ["pinion_teeth", "module_mm", "face_width_mm", "pressure_angle_deg"], "gear": ["gear_teeth", "module_mm", "face_width_mm", "pressure_angle_deg"], "gear-pair": ["input_torque_Nm", "input_speed_rpm", "gear_ratio"]}
-        values = {**design.requirements.model_dump(), "pinion_teeth": design.components[0].teeth, "gear_teeth": design.components[1].teeth}
-        units = {"pinion_teeth":"teeth","gear_teeth":"teeth","gear_ratio":"ratio","module_mm":"mm","face_width_mm":"mm","pressure_angle_deg":"deg","input_torque_Nm":"N·m","input_speed_rpm":"rpm"}
-        trace = {name:{"canonical_target":f"requirements.{name}" if name not in {"pinion_teeth","gear_teeth"} else f"components.{name.removesuffix('_teeth')}.teeth","value":value,"unit":units[name],"source":design.requirement_sources.get(name,"derived" if name=="gear_ratio" else "assumed"),"evidence":design.requirement_evidence.get(name),"quantity":design.parameter_quantities[name].model_dump(mode="json")} for name,value in values.items()}
+        hub_refs = ["hub_diameter_mm", "hub_length_mm"] if getattr(design.requirements, "hub_diameter_mm", None) is not None else []
+        component_refs = {
+            "pinion": ["pinion_teeth", "module_mm", "face_width_mm", "pressure_angle_deg"] + hub_refs,
+            "gear": ["gear_teeth", "module_mm", "face_width_mm", "pressure_angle_deg"],
+            "gear-pair": ["input_torque_Nm", "input_speed_rpm", "gear_ratio"],
+        }
+        values = {**design.requirements.model_dump(exclude_none=True), "pinion_teeth": design.components[0].teeth, "gear_teeth": design.components[1].teeth}
+        units = {"pinion_teeth":"teeth","gear_teeth":"teeth","gear_ratio":"ratio","module_mm":"mm","face_width_mm":"mm","pressure_angle_deg":"deg","input_torque_Nm":"N·m","input_speed_rpm":"rpm","hub_diameter_mm":"mm","hub_length_mm":"mm"}
+        trace = {name:{"canonical_target":f"requirements.{name}" if name not in {"pinion_teeth","gear_teeth"} else f"components.{name.removesuffix('_teeth')}.teeth","value":value,"unit":units.get(name, "mm"),"source":design.requirement_sources.get(name,"derived" if name=="gear_ratio" else "assumed"),"evidence":design.requirement_evidence.get(name),"quantity":design.parameter_quantities[name].model_dump(mode="json")} for name,value in values.items() if name in design.parameter_quantities}
         for item in trace.values():
             evidence=item["evidence"]
             if evidence and design.source_prompt:
@@ -400,6 +405,11 @@ def initialize_project(request: FamilyInitializationRequest):
     candidate.revision = current.revision + 1
     candidate.history = [*current.history, {"revision": current.revision, "changed_at": current.updated_at, "design": current.model_dump(mode="json")}]
     candidate.updated_at = datetime.now(timezone.utc).isoformat()
+    if candidate.family == "electric_vehicle":
+        from .automotive import VehicleDesign
+        candidate = VehicleDesign.model_validate(candidate.model_dump(mode="json"))
+    else:
+        candidate = Design.model_validate(candidate.model_dump(mode="json"))
     family.validate_state(candidate)
     save_candidate_at_revision(candidate, current.revision)
     return response(candidate)
@@ -414,6 +424,7 @@ def restore_demo_project():
     candidate.revision = current.revision + 1
     candidate.history = [*current.history, {"revision": current.revision, "changed_at": current.updated_at, "design": current.model_dump(mode="json")}]
     candidate.updated_at = datetime.now(timezone.utc).isoformat()
+    candidate = Design.model_validate(candidate.model_dump(mode="json"))
     save_candidate_at_revision(candidate, current.revision)
     return response(candidate)
 
@@ -559,6 +570,26 @@ def project_change_impact(request: ChangeImpactRequest):
             "affected_outputs": affected, "currently_stale_artifacts": [item["artifact_id"] for item in artifacts if item["stale"]],
             "outputs_will_become_stale_after_commit": True, "design_mutated": False,
             "note": "Dependency mapping is conservative and family-level; each listed output must be regenerated or recalculated after the reviewed edit."}
+
+
+class ProposeEditRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1, max_length=2000)
+    expected_revision: int | None = None
+
+
+@app.post("/api/v1/project/propose-edit")
+def propose_project_edit(request: ProposeEditRequest):
+    """Parse a natural-language parameter edit into a reviewable, revision-safe proposal."""
+    design = store.load()
+    if request.expected_revision is not None and request.expected_revision != design.revision:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Project revision advanced from {request.expected_revision} to {design.revision}. Reload and review before proposing edits.",
+            headers={"X-Design-Revision": str(design.revision)},
+        )
+    proposal = propose_parameter_edit(request.text, design)
+    return proposal.model_dump(mode="json")
 
 
 @app.post("/api/v1/specifications/propose")

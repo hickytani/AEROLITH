@@ -17,6 +17,11 @@ class Requirements(BaseModel):
     module_mm: float = Field(ge=0.5, le=6)
     face_width_mm: float = Field(ge=2, le=60)
     pressure_angle_deg: float = Field(default=20, ge=14, le=30)
+    # Optional mounting hub extension (shaft hub protruding beyond the gear face)
+    hub_diameter_mm: float | None = Field(default=None, ge=4, le=60,
+        description="Outside diameter of the cylindrical shaft hub (mm). Must exceed computed bore diameter.")
+    hub_length_mm: float | None = Field(default=None, ge=2, le=60,
+        description="Axial length of the shaft hub extension beyond one gear face (mm).")
 
 
 class Component(BaseModel):
@@ -59,17 +64,31 @@ class Design(BaseModel):
         for key, evidence in self.requirement_evidence.items():
             if not evidence or not self.source_prompt or evidence not in self.source_prompt:
                 raise ValueError(f"Requirement evidence for {key} must be an exact span of the retained source prompt.")
+        # Hub cross-field constraint: hub outside diameter must exceed computed bore to produce a valid solid
+        if self.requirements.hub_diameter_mm is not None:
+            min_teeth = min(c.teeth for c in self.components)
+            bore_d = min(max(self.requirements.module_mm * 2, 4.0), self.requirements.module_mm * (min_teeth - 2.5) * 0.7)
+            if self.requirements.hub_diameter_mm <= bore_d:
+                raise ValueError(
+                    f"hub_diameter_mm ({self.requirements.hub_diameter_mm:.2f}) must exceed computed bore diameter"
+                    f" ({bore_d:.2f} mm). Increase hub_diameter_mm or reduce module_mm."
+                )
         quantity_specs: dict[str, tuple[float, str, QuantityKind, float | None, float | None]] = {
             "pinion_teeth": (self.components[0].teeth, "teeth", "count", 8, 80),
             "gear_teeth": (self.components[1].teeth, "teeth", "count", 8, 120),
             "gear_ratio": (self.requirements.gear_ratio, "ratio", "ratio", 0, None),
-            "input_torque_Nm": (self.requirements.input_torque_Nm, "N·m", "torque", 0, None),
+            "input_torque_Nm": (self.requirements.input_torque_Nm, "N\u00b7m", "torque", 0, None),
             "input_speed_rpm": (self.requirements.input_speed_rpm, "rpm", "rotational_speed", 0, None),
             "module_mm": (self.requirements.module_mm, "mm", "length", 0.5, 6),
             "face_width_mm": (self.requirements.face_width_mm, "mm", "length", 2, 60),
             "pressure_angle_deg": (self.requirements.pressure_angle_deg, "deg", "angle", 14, 30),
         }
+        if self.requirements.hub_diameter_mm is not None:
+            quantity_specs["hub_diameter_mm"] = (self.requirements.hub_diameter_mm, "mm", "length", 4, 60)
+        if self.requirements.hub_length_mm is not None:
+            quantity_specs["hub_length_mm"] = (self.requirements.hub_length_mm, "mm", "length", 2, 60)
         expected_quantities = {}
+
         for name, (value, unit, kind, minimum, maximum) in quantity_specs.items():
             source = self.requirement_sources.get(name, "derived" if name == "gear_ratio" else "assumed")
             evidence = self.requirement_evidence.get(name)
@@ -120,6 +139,8 @@ class EditRequest(BaseModel):
     module_mm: float | None = Field(default=None, ge=0.5, le=6)
     face_width_mm: float | None = Field(default=None, ge=2, le=60)
     pressure_angle_deg: float | None = Field(default=None, ge=14, le=30)
+    hub_diameter_mm: float | None = Field(default=None, ge=4, le=60)
+    hub_length_mm: float | None = Field(default=None, ge=2, le=60)
 
     @model_validator(mode="after")
     def at_least_one_edit(self) -> "EditRequest":

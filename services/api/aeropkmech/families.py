@@ -51,11 +51,19 @@ class SpurGearPairFamily:
             {"name": "module_mm", "unit": "mm", "minimum": 0.5, "maximum": 6},
             {"name": "face_width_mm", "unit": "mm", "minimum": 2, "maximum": 60},
             {"name": "pressure_angle_deg", "unit": "deg", "minimum": 14, "maximum": 30, "default": 20},
-            {"name": "input_torque_Nm", "unit": "N·m", "minimum_exclusive": 0},
+            {"name": "input_torque_Nm", "unit": "N\u00b7m", "minimum_exclusive": 0},
             {"name": "input_speed_rpm", "unit": "rpm", "minimum_exclusive": 0},
+            {"name": "hub_diameter_mm", "unit": "mm", "minimum": 4, "maximum": 60, "optional": True,
+             "description": "Outside diameter of the cylindrical shaft hub boss (mm). Must exceed computed bore diameter."},
+            {"name": "hub_length_mm", "unit": "mm", "minimum": 2, "maximum": 60, "optional": True,
+             "description": "Axial length of the hub extension beyond one gear face (mm)."},
         ),
-        capabilities=("typed parameter validation", "ideal ratio and kinematics", "sampled mathematical involute CAD", "STEP/STL, reports, and reference drawing"),
-        limitations=("straight radial root connector, not a generated cutter trochoid", "no tooth-contact or interference analysis", "no strength, fatigue, thermal, or safety rating", "single local project store"),
+        capabilities=("typed parameter validation", "ideal ratio and kinematics", "sampled mathematical involute CAD",
+                       "optional cylindrical shaft hub boss on both gears", "STEP/STL, reports, and reference drawing"),
+        limitations=("straight radial root connector, not a generated cutter trochoid", "no tooth-contact or interference analysis",
+                     "no strength, fatigue, thermal, or safety rating",
+                     "hub geometry is a cylindrical envelope only \u2014 no keyway, spline, or interference-fit analysis",
+                     "single local project store"),
         artifacts=("step", "stl", "html", "pdf"),
         exporters=(
             {"type": "step", "implementation": "aeropkmech.cad.export_step"},
@@ -65,6 +73,7 @@ class SpurGearPairFamily:
         ),
         verification_checks=("implemented input consistency", "involute profile dimensions: WARNING (sampled flank/root transition approximation)", "ideal kinematics: PARTIAL", "tooth contact: UNOBSERVABLE", "tooth strength: UNKNOWN", "thermal: UNTESTED", "service conditions: UNOBSERVABLE"),
     )
+
 
     def default_design(self) -> Design:
         from .store import default_design
@@ -157,6 +166,9 @@ class GearExperimentRequest(BaseModel):
     pressure_angle_deg: float = Field(default=20, ge=14, le=30)
     input_torque_Nm: float = Field(default=8, gt=0)
     input_speed_rpm: float = Field(default=900, gt=0)
+    hub_diameter_mm: float | None = Field(default=None, ge=4, le=60)
+    hub_length_mm: float | None = Field(default=None, ge=2, le=60)
+
 
 
 IMPLEMENTED_FAMILIES: dict[str, DesignFamily] = {"spur_gear_pair": SpurGearPairFamily(), "electric_vehicle": ElectricVehicleFamily()}

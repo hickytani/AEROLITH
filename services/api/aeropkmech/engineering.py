@@ -25,7 +25,7 @@ def derive(design: Design) -> dict:
     d2 = module * gear.teeth
     pressure = math.radians(req.pressure_angle_deg)
     ratio = gear.teeth / pinion.teeth
-    return {
+    result = {
         "gear_ratio": ratio,
         "center_distance_mm": ((d1 + d2) / 2).to(units.mm).magnitude,
         "pinion_pitch_diameter_mm": d1.to(units.mm).magnitude,
@@ -58,6 +58,22 @@ def derive(design: Design) -> dict:
             for component in (pinion, gear)
         ],
     }
+    # Expose hub geometry when hub extension parameters are committed
+    if req.hub_diameter_mm is not None and req.hub_length_mm is not None:
+        hub_r = req.hub_diameter_mm / 2
+        result["hub_geometry"] = {
+            "hub_diameter_mm": req.hub_diameter_mm,
+            "hub_length_mm": req.hub_length_mm,
+            "bore_diameter_mm": bore_diameter_mm(design),
+            "hub_volume_mm3": round(math.pi * hub_r ** 2 * req.hub_length_mm, 3),
+            "note": (
+                "Cylindrical shaft hub extension; outside diameter must exceed bore for valid OCCT solid. "
+                "Hub geometry is an envelope approximation only — no keyway, spline, interference-fit, "
+                "fatigue, or strength analysis is performed."
+            ),
+        }
+    return result
+
 
 
 def calculation_details(design: Design) -> dict:

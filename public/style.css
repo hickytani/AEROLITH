@@ -90,6 +90,10 @@ button:disabled { opacity: .58; cursor: wait; }
 .component-select small { display: block; margin-top: 3px; color: #526575; font: 12px/1.45 var(--font-mono); }
 .eye { align-self: center; min-width: 64px; padding: 6px 7px; border: 1px solid #d3dfe4; background: #fff; color: #315668; font-size: 12px; font-weight: 600; cursor: pointer; }
 .eye[aria-pressed="false"] { background: #eef1f3; color: #536575; }
+.isolate-btn { align-self: center; min-width: 54px; padding: 6px 7px; border: 1px solid #d3dfe4; background: #fff; color: #315668; font-size: 12px; font-weight: 600; cursor: pointer; }
+.isolate-btn:hover { background: #eaf3f5; color: #075b70; }
+.subsystem-heading { margin: 12px 0 6px; padding: 5px 8px; background: #eef4f7; color: #214152; font: 600 12px/1.4 var(--font-mono); letter-spacing: .5px; text-transform: uppercase; border-left: 3px solid var(--cyan); display: flex; justify-content: space-between; align-items: center; }
+.subsystem-heading span { font: 12px var(--font-mono); color: #526575; }
 .component-assistant { margin-top: 15px; padding: 12px; border: 1px solid #d3dfe4; background: #f7fafb; }
 .component-assistant h3 { margin: 0 0 10px; color: #173247; font-size: 14px; }
 .component-assistant label { display: block; margin-bottom: 5px; color: #405969; font-size: 12px; }
@@ -108,7 +112,9 @@ button:disabled { opacity: .58; cursor: wait; }
 .cam { display: flex; flex-wrap: wrap; gap: 4px; }
 .cam button { min-height: 36px; padding: 6px 9px; border: 1px solid #d6e0e5; background: #fff; color: #344e5f; font: 13px var(--font-mono); cursor: pointer; }
 .cam button:hover, .cam button:active { border-color: #007f98; background: #edf7f8; color: #075b70; }
+.cam button[aria-pressed="true"] { border-color: #007f98; background: #007f98; color: #fff; }
 #viewport { position: relative; flex: 1; min-height: 520px; overflow: hidden; background-color: #f9fbfc; background-image: linear-gradient(#e9eef1 1px, transparent 1px), linear-gradient(90deg, #e9eef1 1px, transparent 1px); background-size: 30px 30px; }
+.viewport-tooltip { position: absolute; z-index: 10; pointer-events: none; padding: 6px 10px; background: rgba(16, 28, 41, 0.94); color: #fff; border: 1px solid #16bed6; border-radius: 3px; font-size: 12px; line-height: 1.45; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3); max-width: 280px; white-space: pre-line; }
 .loading { position: absolute; z-index: 2; top: 12px; left: 12px; max-width: min(360px, calc(100% - 24px)); padding: 9px 11px; border: 1px solid #d3e0e4; background: #fffF; color: #344d5d; font: 13px/1.5 var(--font-ui); box-shadow: 0 2px 10px #14243512; }
 .loading-error { border-color: #d9a8a1; background: #fff8f7; color: #812d26; }
 .geometry-errors { position: absolute; z-index: 2; top: 12px; right: 12px; width: min(370px, calc(50% - 18px)); max-height: 48%; overflow: auto; padding: 10px 13px; border: 1px solid #d9a8a1; border-left: 4px solid var(--danger); background: #fffaf9; color: #6f2b25; font-size: 13px; line-height: 1.5; box-shadow: 0 2px 10px #14243512; }

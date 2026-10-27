@@ -29,6 +29,24 @@ class ModelUnavailable(RuntimeError):
         self.code = code
 
 
+class InferenceStatus(StrEnum):
+    """Real-time inference availability reported by the model status endpoint.
+
+    Distinct from ModelState (the registry lifecycle state). This is the
+    per-request readiness status surfaced in the Studio UI.
+    """
+    MODEL_READY = "MODEL_READY"                     # Ollama model loaded, healthy, inference enabled
+    FALLBACK_DETERMINISTIC = "FALLBACK_DETERMINISTIC"  # No model configured; deterministic pipeline active
+    INFERENCE_TIMEOUT = "INFERENCE_TIMEOUT"         # Model configured but timed out; deterministic fallback used
+    INFERENCE_FAILED = "INFERENCE_FAILED"           # Model responded with an error
+    INVALID_CONFIGURATION = "INVALID_CONFIGURATION" # Bad model ID/URL
+    MODEL_NOT_INSTALLED = "MODEL_NOT_INSTALLED"     # Model name not found in Ollama
+    RESOURCE_EXHAUSTED = "RESOURCE_EXHAUSTED"       # OOM / CUDA allocation failure
+    DISABLED = "DISABLED"                           # Explicitly disabled in env config
+
+
+
+
 class ComponentAnswer(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     answer: str = Field(min_length=1, max_length=4000)

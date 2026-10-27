@@ -26,6 +26,128 @@ let specificationCommitted = false;
 let specificationRequestSequence = 0;
 const visibilityById = { pinion: true, gear: true };
 let gearComponentMarkup = null;
+let exploded = false;
+let hoveredId = null;
+
+function getExplodedOffset(id) {
+  if (project?.family === 'spur_gear') {
+    return id === 'pinion' ? [-30, 0, 0] : [30, 0, 0];
+  }
+  const offsets = {
+    front_left_wheel: [60, 160, 0],
+    front_right_wheel: [60, -160, 0],
+    rear_left_wheel: [-60, 160, 0],
+    rear_right_wheel: [-60, -160, 0],
+    cabin_envelope: [0, 0, 200],
+    body_envelope: [0, 0, 200],
+    seating_buck: [0, 0, 140],
+    battery_pack: [0, 0, -150],
+    battery_enclosure: [0, 0, -100],
+    front_axle: [80, 0, 0],
+    front_subframe: [50, 0, 0],
+    steering_rack: [60, 0, 0],
+    rear_axle: [-80, 0, 0],
+    rear_subframe: [-50, 0, 0],
+    traction_motor: [-110, 0, 0],
+    inverter: [0, 0, 90],
+    high_voltage_junction: [0, 0, 70],
+    chassis_frame: [0, 0, 0],
+  };
+  return offsets[id] || [0, 0, 0];
+}
+
+function toggleExploded() {
+  exploded = !exploded;
+  for (const [id, mesh] of Object.entries(meshes)) {
+    const offset = exploded ? getExplodedOffset(id) : [0, 0, 0];
+    mesh.position.set(offset[0], offset[1], offset[2]);
+  }
+  const btn = byId('explode-toggle');
+  if (btn) {
+    btn.setAttribute('aria-pressed', String(exploded));
+    btn.textContent = exploded ? 'COLLAPSE' : 'EXPLODE';
+  }
+  fitView();
+}
+
+function handlePointerMove(event) {
+  if (disposed || !renderer || !camera) return;
+  const rect = renderer.domElement.getBoundingClientRect();
+  const mouse = new THREE.Vector2(
+    ((event.clientX - rect.left) / rect.width) * 2 - 1,
+    -((event.clientY - rect.top) / rect.height) * 2 + 1
+  );
+  const ray = new THREE.Raycaster();
+  ray.setFromCamera(mouse, camera);
+  const hit = ray.intersectObjects(Object.values(meshes).filter((m) => m.visible))[0];
+  const tooltip = byId('viewport-tooltip');
+  if (hit) {
+    const id = hit.object.userData.id;
+    if (hoveredId !== id) {
+      if (hoveredId && meshes[hoveredId] && hoveredId !== selectedId) {
+        const prevColor = hoveredId === 'pinion' ? 0x00a8c7 : 0x9cabb5;
+        meshes[hoveredId].material.color.setHex(prevColor);
+        meshes[hoveredId].material.emissive.setHex(0x000000);
+      }
+      hoveredId = id;
+      if (id !== selectedId) {
+        hit.object.material.emissive.setHex(0x093a44);
+      }
+    }
+    if (tooltip) {
+      tooltip.hidden = false;
+      tooltip.style.left = `${Math.min(rect.width - 240, Math.max(10, event.clientX - rect.left + 14))}px`;
+      tooltip.style.top = `${Math.min(rect.height - 80, Math.max(10, event.clientY - rect.top + 14))}px`;
+      const comp = project?.derived?.components?.find((c) => c.id === id);
+      const name = comp?.name || id;
+      const dims = comp?.dimensions ? `${comp.dimensions.length_mm?.toFixed(0)} × ${comp.dimensions.width_mm?.toFixed(0)} × ${comp.dimensions.height_mm?.toFixed(0)} mm` : (comp?.pitch_diameter_mm ? `d=${comp.pitch_diameter_mm.toFixed(1)} mm, z=${comp.teeth}` : '');
+      const parent = comp?.parent_id ? ` · Parent: ${comp.parent_id}` : '';
+      tooltip.textContent = `${name} [${id}]${parent}${dims ? `\n${dims}` : ''}\nClick to pin · Double-click to focus`;
+    }
+  } else {
+    if (hoveredId && meshes[hoveredId] && hoveredId !== selectedId) {
+      const prevColor = hoveredId === 'pinion' ? 0x00a8c7 : 0x9cabb5;
+      meshes[hoveredId].material.color.setHex(prevColor);
+      meshes[hoveredId].material.emissive.setHex(0x000000);
+    }
+    hoveredId = null;
+    if (tooltip) tooltip.hidden = true;
+  }
+}
+
+function handlePointerLeave() {
+  if (hoveredId && meshes[hoveredId] && hoveredId !== selectedId) {
+    const prevColor = hoveredId === 'pinion' ? 0x00a8c7 : 0x9cabb5;
+    meshes[hoveredId].material.color.setHex(prevColor);
+    meshes[hoveredId].material.emissive.setHex(0x000000);
+  }
+  hoveredId = null;
+  const tooltip = byId('viewport-tooltip');
+  if (tooltip) tooltip.hidden = true;
+}
+
+function handleDoubleClick(event) {
+  if (disposed || !renderer || !camera) return;
+  const rect = renderer.domElement.getBoundingClientRect();
+  const mouse = new THREE.Vector2(
+    ((event.clientX - rect.left) / rect.width) * 2 - 1,
+    -((event.clientY - rect.top) / rect.height) * 2 + 1
+  );
+  const ray = new THREE.Raycaster();
+  ray.setFromCamera(mouse, camera);
+  const hit = ray.intersectObjects(Object.values(meshes).filter((m) => m.visible))[0];
+  if (hit) {
+    const id = hit.object.userData.id;
+    setSelected(id);
+    const box = new THREE.Box3().setFromObject(hit.object);
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z, 25);
+    controls.target.copy(center);
+    camera.position.set(center.x + maxDim * 1.5, center.y - maxDim * 2.2, center.z + maxDim * 1.8);
+    controls.update();
+  }
+}
 
 function required(id) {
   const element = byId(id);
@@ -84,6 +206,9 @@ function init() {
   });
   resizeObserver.observe(element);
   renderer.domElement.addEventListener('pointerdown', pick);
+  renderer.domElement.addEventListener('pointermove', handlePointerMove);
+  renderer.domElement.addEventListener('pointerleave', handlePointerLeave);
+  renderer.domElement.addEventListener('dblclick', handleDoubleClick);
   renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
 }
 
@@ -273,6 +398,10 @@ async function build() {
       mesh.visible = visibilityById[component.id] !== false;
       mesh.castShadow = true;
       mesh.receiveShadow = true;
+      if (exploded) {
+        const offset = getExplodedOffset(component.id);
+        mesh.position.set(offset[0], offset[1], offset[2]);
+      }
       scene.add(mesh);
       meshes[component.id] = mesh;
       if (selectedId === component.id) setSelected(selectedId);
@@ -707,13 +836,81 @@ function fill() {
     renderVehicleEditor();
     const components = required('components');
     components.replaceChildren(textElement('div','02','railhead'),textElement('b','Generated vehicle components'));
-    for (const component of derived.components) {
-      const row=document.createElement('div');row.className='component';row.dataset.id=component.id;
-      const select=textElement('button',component.name,'component-select');select.type='button';select.dataset.id=component.id;select.setAttribute('aria-pressed',String(selectedId===component.id));
-      const meta=textElement('small',`${component.family} · ${component.dimensions.length_mm.toFixed(0)} × ${component.dimensions.width_mm.toFixed(0)} × ${component.dimensions.height_mm.toFixed(0)} mm · ${component.status}${component.parameter_refs?.length ? ` · inputs: ${component.parameter_refs.join(', ')}` : ''}`);
-      select.append(meta);
-      const eye=textElement('button',visibilityById[component.id]===false?'Hidden':'Visible','eye');eye.type='button';eye.dataset.visibility=component.id;eye.setAttribute('aria-pressed',String(visibilityById[component.id]!==false));eye.setAttribute('aria-label',`${visibilityById[component.id]===false?'Show':'Hide'} ${component.name}`);
-      row.append(select,eye);components.append(row);
+    const restoreBtn = textElement('button', 'Restore all components', 'text-button');
+    restoreBtn.id = 'restore-visibility';
+    restoreBtn.type = 'button';
+    restoreBtn.style.cssText = 'margin-top: 2px; font-size: 12px; margin-bottom: 6px;';
+    components.append(restoreBtn);
+
+    const EV_SUBSYSTEMS = [
+      { name: 'Chassis & Frame', ids: ['chassis_frame', 'front_subframe', 'rear_subframe', 'battery_enclosure'] },
+      { name: 'Powertrain & Energy', ids: ['battery_pack', 'traction_motor', 'inverter', 'high_voltage_junction'] },
+      { name: 'Suspension & Running Gear', ids: ['front_left_wheel', 'front_right_wheel', 'rear_left_wheel', 'rear_right_wheel', 'front_axle', 'rear_axle', 'steering_rack'] },
+      { name: 'Cabin & Envelopes', ids: ['cabin_envelope', 'body_envelope', 'seating_buck'] }
+    ];
+    const placedIds = new Set();
+    for (const sub of EV_SUBSYSTEMS) {
+      const matches = derived.components.filter((c) => sub.ids.includes(c.id));
+      if (!matches.length) continue;
+      const heading = document.createElement('div');
+      heading.className = 'subsystem-heading';
+      heading.textContent = sub.name;
+      const count = document.createElement('span');
+      count.textContent = `(${matches.length})`;
+      heading.append(count);
+      components.append(heading);
+      for (const component of matches) {
+        placedIds.add(component.id);
+        const row = document.createElement('div');
+        row.className = 'component';
+        row.dataset.id = component.id;
+        const select = textElement('button', component.name, 'component-select');
+        select.type = 'button';
+        select.dataset.id = component.id;
+        select.setAttribute('aria-pressed', String(selectedId === component.id));
+        const meta = textElement('small', `${component.family} · ${component.dimensions.length_mm.toFixed(0)} × ${component.dimensions.width_mm.toFixed(0)} × ${component.dimensions.height_mm.toFixed(0)} mm · ${component.status}${component.parameter_refs?.length ? ` · inputs: ${component.parameter_refs.join(', ')}` : ''}`);
+        select.append(meta);
+        const isolate = textElement('button', 'Isolate', 'isolate-btn');
+        isolate.type = 'button';
+        isolate.dataset.isolate = component.id;
+        isolate.setAttribute('aria-label', `Isolate ${component.name}`);
+        const eye = textElement('button', visibilityById[component.id] === false ? 'Hidden' : 'Visible', 'eye');
+        eye.type = 'button';
+        eye.dataset.visibility = component.id;
+        eye.setAttribute('aria-pressed', String(visibilityById[component.id] !== false));
+        eye.setAttribute('aria-label', `${visibilityById[component.id] === false ? 'Show' : 'Hide'} ${component.name}`);
+        row.append(select, isolate, eye);
+        components.append(row);
+      }
+    }
+    const others = derived.components.filter((c) => !placedIds.has(c.id));
+    if (others.length) {
+      const heading = document.createElement('div');
+      heading.className = 'subsystem-heading';
+      heading.textContent = 'Other components';
+      components.append(heading);
+      for (const component of others) {
+        const row = document.createElement('div');
+        row.className = 'component';
+        row.dataset.id = component.id;
+        const select = textElement('button', component.name, 'component-select');
+        select.type = 'button';
+        select.dataset.id = component.id;
+        select.setAttribute('aria-pressed', String(selectedId === component.id));
+        const meta = textElement('small', `${component.family} · ${component.status}${component.parameter_refs?.length ? ` · inputs: ${component.parameter_refs.join(', ')}` : ''}`);
+        select.append(meta);
+        const isolate = textElement('button', 'Isolate', 'isolate-btn');
+        isolate.type = 'button';
+        isolate.dataset.isolate = component.id;
+        isolate.setAttribute('aria-label', `Isolate ${component.name}`);
+        const eye = textElement('button', visibilityById[component.id] === false ? 'Hidden' : 'Visible', 'eye');
+        eye.type = 'button';
+        eye.dataset.visibility = component.id;
+        eye.setAttribute('aria-pressed', String(visibilityById[component.id] !== false));
+        eye.setAttribute('aria-label', `${visibilityById[component.id] === false ? 'Show' : 'Hide'} ${component.name}`);
+        row.append(select, isolate, eye);
+        components.append(row);
+      }
     }
     for (const id of ['pinion','gear','module','pressure-angle','width','torque','speed','apply']) { const el=byId(id); if (el) {el.hidden=true;if(el.tagName==='INPUT') el.parentElement.hidden=true;} }
     required('intro-title').textContent='Concept EV';
@@ -931,6 +1128,34 @@ required('components').addEventListener('click', (event) => {
   const button = event.target.closest('button');
   if (!button || disposed) return;
   if (button.classList.contains('component-select')) { setSelected(button.dataset.id); return; }
+  if (button.classList.contains('isolate-btn')) {
+    const targetId = button.dataset.isolate;
+    for (const key of Object.keys(meshes)) {
+      visibilityById[key] = (key === targetId);
+      if (meshes[key]) meshes[key].visible = visibilityById[key];
+    }
+    for (const eye of required('components').querySelectorAll('.eye')) {
+      const id = eye.dataset.visibility;
+      const isVis = visibilityById[id] !== false;
+      eye.setAttribute('aria-pressed', String(isVis));
+      eye.textContent = isVis ? 'Visible' : 'Hidden';
+    }
+    setSelected(targetId);
+    fitView();
+    return;
+  }
+  if (button.id === 'restore-visibility') {
+    for (const key of Object.keys(meshes)) {
+      visibilityById[key] = true;
+      if (meshes[key]) meshes[key].visible = true;
+    }
+    for (const eye of required('components').querySelectorAll('.eye')) {
+      eye.setAttribute('aria-pressed', 'true');
+      eye.textContent = 'Visible';
+    }
+    fitView();
+    return;
+  }
   if (button.classList.contains('eye')) {
     if (disposed) return;
     const id = button.dataset.visibility;
@@ -942,6 +1167,118 @@ required('components').addEventListener('click', (event) => {
     fitView();
   }
 });
+
+async function proposeParameterEdit() {
+  const promptInput = required('request-text');
+  const promptText = promptInput.value.trim();
+  const review = byId('edit-proposal-review');
+  const status = required('intake-result');
+  if (!promptText) {
+    status.textContent = 'Enter an engineering parameter edit request (e.g. "Move battery pack 20 mm rearward", "Increase module to 2.5 mm", "Wheelbase 2700 mm").';
+    return;
+  }
+  status.textContent = 'Analyzing parameter edit and dependencies…';
+  try {
+    const proposal = await request('/project/propose-edit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: promptText })
+    });
+    renderEditProposal(proposal);
+    status.textContent = `Parameter edit proposal generated: ${proposal.explanation}`;
+  } catch (error) {
+    if (review) {
+      review.hidden = false;
+      review.replaceChildren();
+      review.append(textElement('h3', 'Parameter edit rejected'));
+      review.append(textElement('p', error.message, 'spec-error'));
+      review.append(textElement('p', 'Only supported parameter ranges and dependencies are editable. Clarify or adjust your request.', 'specification-meta'));
+    }
+    status.textContent = `Edit rejected: ${error.message}`;
+  }
+}
+
+function renderEditProposal(proposal) {
+  const panel = byId('edit-proposal-review');
+  if (!panel) return;
+  panel.replaceChildren();
+  panel.hidden = false;
+  panel.append(textElement('h3', 'Reviewable parameter edit proposal'));
+  panel.append(textElement('p', `Target: ${proposal.parameter_label} (${proposal.parameter_name}) · Family: ${proposal.family_id}`, 'specification-family'));
+  panel.append(textElement('p', proposal.explanation));
+
+  const table = document.createElement('div');
+  table.className = 'specification-parameters';
+  const valRow = document.createElement('div');
+  valRow.className = 'specification-parameter';
+  valRow.append(textElement('span', `Change: ${proposal.current_value} ${proposal.unit} → ${proposal.proposed_value} ${proposal.unit} (delta: ${proposal.delta > 0 ? '+' : ''}${proposal.delta} ${proposal.unit})`));
+  table.append(valRow);
+
+  if (proposal.affected_dependencies.length) {
+    const depRow = document.createElement('div');
+    depRow.className = 'specification-parameter';
+    depRow.append(textElement('span', `Affected dependent parameters: ${proposal.affected_dependencies.join(', ')}`));
+    table.append(depRow);
+  }
+  panel.append(table);
+
+  panel.append(textElement('h4', 'Dependency & envelope verification'));
+  const checksList = document.createElement('ul');
+  for (const [checkName, checkStatus] of Object.entries(proposal.validation_checks)) {
+    checksList.append(textElement('li', `${checkName.replaceAll('_', ' ')}: ${checkStatus}`));
+  }
+  panel.append(checksList);
+
+  panel.append(textElement('p', `Notice: Committing this edit will create revision ${project.revision + 1}. Geometry will be deterministically regenerated, and prior revision artifacts (R${project.revision}) will be marked stale.`, 'spec-warning'));
+
+  const commitBtn = document.createElement('button');
+  commitBtn.id = 'commit-edit-proposal-btn';
+  commitBtn.className = 'specification-commit';
+  commitBtn.textContent = `Commit edit as revision ${project.revision + 1}`;
+  commitBtn.addEventListener('click', () => commitEditProposal(proposal));
+  panel.append(commitBtn);
+}
+
+async function commitEditProposal(proposal) {
+  if (applying || !project) return;
+  const button = byId('commit-edit-proposal-btn');
+  if (button) button.disabled = true;
+  const previousRevision = project.revision;
+  required('intake-result').textContent = `Committing ${proposal.parameter_label} edit from revision ${previousRevision}…`;
+  try {
+    if (proposal.family_id === 'electric_vehicle') {
+      const payload = {
+        [proposal.parameter_name]: proposal.proposed_value,
+        expected_revision: previousRevision,
+      };
+      const result = await request('/project/vehicle', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      project = result;
+    } else {
+      const payload = {
+        [proposal.parameter_name]: proposal.proposed_value,
+        expected_revision: previousRevision,
+      };
+      const result = await request('/project', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      project = result;
+    }
+    fill();
+    build();
+    loadArtifacts(project.revision);
+    required('intake-result').textContent = `Successfully committed revision ${project.revision}. Geometry regenerated. Prior artifacts are now stale.`;
+    byId('edit-proposal-review').hidden = true;
+  } catch (error) {
+    required('intake-result').textContent = `Failed to commit parameter edit: ${error.message}`;
+    if (button) button.disabled = false;
+  }
+}
 required('component-ask').addEventListener('click', async () => {
   const output = required('component-answer');
   const question = required('component-question').value.trim();
@@ -995,11 +1332,14 @@ for (const link of document.querySelectorAll('.exports > a')) {
 }
 
 required('parse-request').addEventListener('click', () => { if (!disposed) interpretSpecification(); });
+required('propose-edit-btn').addEventListener('click', () => { if (!disposed) proposeParameterEdit(); });
+required('explode-toggle').addEventListener('click', () => { if (!disposed) toggleExploded(); });
 required('request-text').addEventListener('input', () => {
   specificationRequestSequence += 1;
   required('parse-request').disabled = false;
   activeSpecification = null;
   required('specification-review').hidden = true;
+  byId('edit-proposal-review').hidden = true;
   required('intake-result').textContent = 'Request changed. Interpret it again to create a fresh, uncommitted proposal.';
 });
 

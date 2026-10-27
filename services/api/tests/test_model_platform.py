@@ -159,8 +159,8 @@ def test_v2_eight_category_fixture_has_disjoint_splits():
     import runpy
     validator = Path(__file__).resolve().parents[3] / "ml-training" / "scripts" / "validate_dataset.py"
     report = runpy.run_path(str(validator))["validate"](validator.parents[2] / "data" / "learning" / "engineering-v2")
-    assert report["examples"] == 8
-    assert report["counts"] == {"train": 4, "validation": 2, "test": 2}
+    assert report["examples"] == 50
+    assert report["counts"] == {"train": 30, "validation": 10, "test": 10}
 
 
 def test_component_context_is_from_canonical_design():
