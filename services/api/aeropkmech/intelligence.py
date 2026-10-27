@@ -39,6 +39,7 @@ class ProposedRequirements(BaseModel):
 class Extraction(BaseModel):
     family: str = "spur_gear_pair"
     provider: str
+    inference_path: str = "deterministic"
     parsed: bool
     proposal: ProposedRequirements
     missing: list[str]
@@ -549,24 +550,63 @@ def propose_specification(text: str) -> EngineeringSpecification:
     )
 
 
+def check_field_grounded_in_text(field: str, text: str) -> bool:
+    """Validate whether an extracted field is explicitly grounded in the prompt text."""
+    patterns = {
+        "pinion_teeth": [r"\bpinion\b", r"\bdriver\b"],
+        "gear_teeth": [r"\bgear\b", r"\bdriven\b"],
+        "gear_ratio": [r"\bratio\b", r"\breduction\b"],
+        "input_torque_Nm": [r"\btorque\b", r"\bN[·.]?m\b", r"\bNm\b"],
+        "input_speed_rpm": [r"\bspeed\b", r"\brpm\b"],
+        "module_mm": [r"\bmodule\b", r"\bmod\b"],
+        "face_width_mm": [r"\bface\s+width\b", r"\bwidth\b"],
+        "pressure_angle_deg": [r"\bpressure\s+angle\b", r"\bdeg\b", r"°"],
+        "bore_diameter_mm": [r"\bbore\b", r"\bshaft\b"],
+        "keyway_width_mm": [r"\bkeyway\b"],
+        "keyway_depth_mm": [r"\bkeyway\b"],
+        "hub_diameter_mm": [r"\bhub\b"],
+        "hub_length_mm": [r"\bhub\b"],
+    }
+    pats = patterns.get(field, [])
+    return any(re.search(p, text, re.IGNORECASE) for p in pats)
+
+
 async def extract(text: str, provider: RequirementProvider | None = None) -> Extraction:
-    if provider is None or isinstance(provider, NoModelProvider):
-        return extract_local(text)
-    # A provider may return only the typed proposal. Pydantic rejects extra
-    # fields and invalid ranges; evidence/conflicts are still generated locally.
-    candidate = ProposedRequirements.model_validate(await provider.propose(text))
     local = extract_local(text)
-    proposed = candidate.model_dump()
-    missing = [key for key, value in proposed.items() if value is None]
-    return Extraction(
-        provider=type(provider).__name__,
-        parsed=not missing and not local.conflicts,
-        proposal=candidate,
-        missing=missing,
-        conflicts=local.conflicts,
-        evidence=local.evidence,
-        derivations=local.derivations,
-    )
+    if provider is None or isinstance(provider, NoModelProvider):
+        return local
+    try:
+        raw_output = await provider.propose(text)
+        if not isinstance(raw_output, dict):
+            raise ValueError("Provider output must be a dictionary.")
+
+        # Anti-hallucination check: reject fabricated defaults for unmentioned fields
+        sanitized = {}
+        for k, v in raw_output.items():
+            if v is not None and not check_field_grounded_in_text(k, text):
+                sanitized[k] = None
+            else:
+                sanitized[k] = v
+
+        candidate = ProposedRequirements.model_validate(sanitized)
+        proposed = candidate.model_dump()
+        missing = [key for key, value in proposed.items() if value is None and key not in _OPTIONAL_FIELDS]
+        return Extraction(
+            family="spur_gear_pair",
+            provider=type(provider).__name__,
+            inference_path="local_slm",
+            parsed=not missing and not local.conflicts,
+            proposal=candidate,
+            missing=missing,
+            conflicts=local.conflicts,
+            evidence=local.evidence,
+            derivations=local.derivations,
+            requires_confirmation=True,
+        )
+    except Exception:
+        fallback = local.model_copy(deep=True)
+        fallback.inference_path = "deterministic_fallback"
+        return fallback
 
 
 class ParameterEditProposal(BaseModel):
@@ -576,15 +616,18 @@ class ParameterEditProposal(BaseModel):
     expected_revision: int
     matched: bool
     parameter_name: str | None = None
+    parameter_label: str | None = None
     canonical_target: str | None = None
     old_value: float | int | None = None
     proposed_value: float | int | None = None
+    delta: float | None = None
     unit: str | None = None
     evidence: str | None = None
     affected_components: list[str] = Field(default_factory=list)
     affected_dependencies: list[str] = Field(default_factory=list)
     validation_passed: bool = True
     validation_error: str | None = None
+    validation_checks: dict[str, str] = Field(default_factory=dict)
     requires_confirmation: bool = True
     can_commit: bool = False
     explanation: str
@@ -682,21 +725,30 @@ def propose_parameter_edit(text: str, design: Any) -> ParameterEditProposal:
                     valid = False
                     val_err = f"{param} value {proposed_val} exceeds maximum allowed {max_val} {default_unit}."
 
+                delta_val = round(proposed_val - curr_val, 4) if curr_val is not None else None
+                checks = {
+                    "range_boundary": "PASSED" if valid else f"FAILED: {val_err}",
+                    "schema_invariants": "PASSED" if valid else "REJECTED",
+                }
+
                 return ParameterEditProposal(
                     request=text,
                     family="spur_gear_pair",
                     expected_revision=revision,
                     matched=True,
                     parameter_name=param,
+                    parameter_label=param.replace("_", " "),
                     canonical_target=f"requirements.{param}" if param not in {"pinion_teeth", "gear_teeth"} else f"components.{param.removesuffix('_teeth')}.teeth",
                     old_value=curr_val,
                     proposed_value=proposed_val,
+                    delta=delta_val,
                     unit=default_unit,
                     evidence=evidence,
                     affected_components=affected_comps,
                     affected_dependencies=deps,
                     validation_passed=valid,
                     validation_error=val_err,
+                    validation_checks=checks,
                     requires_confirmation=True,
                     can_commit=valid,
                     explanation=f"Propose changing {param} from {curr_val} {default_unit} to {proposed_val} {default_unit}. Affected components: {', '.join(affected_comps)}.",
@@ -708,9 +760,10 @@ def propose_parameter_edit(text: str, design: Any) -> ParameterEditProposal:
             expected_revision=revision,
             matched=False,
             validation_passed=False,
+            validation_checks={"pattern_matching": "NO_MATCH"},
             requires_confirmation=True,
             can_commit=False,
-            explanation="Could not identify a supported spur gear parameter edit in this request. Supported parameters: pinion teeth (8..80), gear teeth (8..120), module (0.5..6 mm), face width (2..60 mm), pressure angle (14..30 deg), input torque, input speed.",
+            explanation="Could not identify a supported spur gear parameter edit in this request. Supported parameters: pinion teeth (8..80), gear teeth (8..120), module (0.5..6 mm), face width (2..60 mm), pressure angle (14..30 deg), input torque, input speed, shaft bore (3..50 mm), keyway width (1..20 mm), keyway depth (0.5..10 mm), hub OD (4..60 mm), hub length (2..60 mm).",
         )
 
     # electric_vehicle family
@@ -721,7 +774,9 @@ def propose_parameter_edit(text: str, design: Any) -> ParameterEditProposal:
             expected_revision=revision,
             matched=True,
             parameter_name=None,
+            parameter_label="battery pack packaging placement",
             validation_passed=False,
+            validation_checks={"packaging_constraint": "DERIVED_PACKAGING_PLACEMENT"},
             requires_confirmation=True,
             can_commit=False,
             explanation="The battery pack envelope placement in electric_vehicle@1.0 is derived from wheelbase, ground clearance, and frame rail geometry. To shift packaging envelopes, adjust wheelbase_mm or ground_clearance_mm directly.",
@@ -805,21 +860,30 @@ def propose_parameter_edit(text: str, design: Any) -> ParameterEditProposal:
                     valid = False
                     val_err = str(exc)
 
+            delta_val = round(proposed_val - curr_val, 2) if curr_val is not None else None
+            checks = {
+                "range_boundary": "PASSED" if valid else f"FAILED: {val_err}",
+                "packaging_envelope": "PASSED" if valid else "REJECTED",
+            }
+
             return ParameterEditProposal(
                 request=text,
                 family="electric_vehicle",
                 expected_revision=revision,
                 matched=True,
                 parameter_name=param,
+                parameter_label=param.replace("_", " "),
                 canonical_target=f"requirements.{param}",
                 old_value=curr_val,
                 proposed_value=proposed_val,
+                delta=delta_val,
                 unit=default_unit,
                 evidence=evidence,
                 affected_components=affected_deps,
                 affected_dependencies=affected_deps,
                 validation_passed=valid,
                 validation_error=val_err,
+                validation_checks=checks,
                 requires_confirmation=True,
                 can_commit=valid,
                 explanation=f"Propose changing EV {param} from {curr_val} mm to {proposed_val} mm. Affected components/dependencies: {', '.join(affected_deps)}.",
@@ -831,6 +895,7 @@ def propose_parameter_edit(text: str, design: Any) -> ParameterEditProposal:
         expected_revision=revision,
         matched=False,
         validation_passed=False,
+        validation_checks={"pattern_matching": "NO_MATCH"},
         requires_confirmation=True,
         can_commit=False,
         explanation="Could not identify a supported EV packaging parameter edit in this request. Supported parameters include: wheelbase (1000..8000 mm), overall length, overall width, front/rear tracks, ground clearance, tire diameter, tire width, body height.",

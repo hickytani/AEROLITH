@@ -241,6 +241,8 @@ def gear_solid(
         solid = cq.Workplane("XY").newObject([solid.val().fuse(hub.val())])
     # Optional parallel keyway slot cut into the bore (DIN 6885)
     if keyway_width_mm is not None and keyway_depth_mm is not None and bore_diameter > 0:
+        if keyway_width_mm <= 0 or keyway_depth_mm <= 0:
+            raise ValueError("Keyway width and depth must be strictly positive.")
         total_z = width + (hub_length_mm or 0) + 4.0
         key_cutter = (
             cq.Workplane("XY")

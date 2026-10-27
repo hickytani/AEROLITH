@@ -1174,7 +1174,7 @@ async function proposeParameterEdit() {
   const review = byId('edit-proposal-review');
   const status = required('intake-result');
   if (!promptText) {
-    status.textContent = 'Enter an engineering parameter edit request (e.g. "Move battery pack 20 mm rearward", "Increase module to 2.5 mm", "Wheelbase 2700 mm").';
+    status.textContent = 'Enter an engineering parameter edit request (e.g. "Set shaft bore to 15 mm", "Keyway width 4 mm", "Increase pinion to 22 teeth").';
     return;
   }
   status.textContent = 'Analyzing parameter edit and dependencies…';
@@ -1182,7 +1182,7 @@ async function proposeParameterEdit() {
     const proposal = await request('/project/propose-edit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: promptText })
+      body: JSON.stringify({ text: promptText, prompt: promptText, expected_revision: project?.revision })
     });
     renderEditProposal(proposal);
     status.textContent = `Parameter edit proposal generated: ${proposal.explanation}`;
@@ -1204,17 +1204,30 @@ function renderEditProposal(proposal) {
   panel.replaceChildren();
   panel.hidden = false;
   panel.append(textElement('h3', 'Reviewable parameter edit proposal'));
-  panel.append(textElement('p', `Target: ${proposal.parameter_label} (${proposal.parameter_name}) · Family: ${proposal.family_id}`, 'specification-family'));
+  const familyName = proposal.family || proposal.family_id || 'spur_gear_pair';
+  const label = proposal.parameter_label || proposal.parameter_name || 'Parameter';
+  panel.append(textElement('p', `Target: ${label} (${proposal.parameter_name || 'unassigned'}) · Family: ${familyName}`, 'specification-family'));
   panel.append(textElement('p', proposal.explanation));
 
   const table = document.createElement('div');
   table.className = 'specification-parameters';
+
   const valRow = document.createElement('div');
-  valRow.className = 'specification-parameter';
-  valRow.append(textElement('span', `Change: ${proposal.current_value} ${proposal.unit} → ${proposal.proposed_value} ${proposal.unit} (delta: ${proposal.delta > 0 ? '+' : ''}${proposal.delta} ${proposal.unit})`));
+  valRow.className = `specification-parameter${proposal.validation_passed ? '' : ' spec-invalid'}`;
+  const deltaStr = proposal.delta !== undefined && proposal.delta !== null
+    ? ` (delta: ${proposal.delta > 0 ? '+' : ''}${proposal.delta} ${proposal.unit || ''})`
+    : '';
+  valRow.append(textElement('span', `Change: ${proposal.old_value ?? proposal.current_value ?? '—'} ${proposal.unit || ''} → ${proposal.proposed_value ?? '—'} ${proposal.unit || ''}${deltaStr}`));
   table.append(valRow);
 
-  if (proposal.affected_dependencies.length) {
+  if (proposal.affected_components && proposal.affected_components.length) {
+    const compRow = document.createElement('div');
+    compRow.className = 'specification-parameter';
+    compRow.append(textElement('span', `Affected component ID(s): ${proposal.affected_components.join(', ')}`));
+    table.append(compRow);
+  }
+
+  if (proposal.affected_dependencies && proposal.affected_dependencies.length) {
     const depRow = document.createElement('div');
     depRow.className = 'specification-parameter';
     depRow.append(textElement('span', `Affected dependent parameters: ${proposal.affected_dependencies.join(', ')}`));
@@ -1224,19 +1237,45 @@ function renderEditProposal(proposal) {
 
   panel.append(textElement('h4', 'Dependency & envelope verification'));
   const checksList = document.createElement('ul');
-  for (const [checkName, checkStatus] of Object.entries(proposal.validation_checks)) {
-    checksList.append(textElement('li', `${checkName.replaceAll('_', ' ')}: ${checkStatus}`));
+  const checks = proposal.validation_checks || {};
+  if (Object.keys(checks).length === 0) {
+    checksList.append(textElement('li', proposal.validation_passed ? 'validation: PASSED' : `validation: FAILED (${proposal.validation_error || 'rejected'})`));
+  } else {
+    for (const [checkName, checkStatus] of Object.entries(checks)) {
+      checksList.append(textElement('li', `${checkName.replaceAll('_', ' ')}: ${checkStatus}`));
+    }
   }
   panel.append(checksList);
 
-  panel.append(textElement('p', `Notice: Committing this edit will create revision ${project.revision + 1}. Geometry will be deterministically regenerated, and prior revision artifacts (R${project.revision}) will be marked stale.`, 'spec-warning'));
+  const nextRevision = (project?.revision || proposal.expected_revision || 1) + 1;
+  panel.append(textElement('p', `Notice: Committing this edit will advance design to revision ${nextRevision}. Geometry will be deterministically rebuilt, and prior artifacts (R${project?.revision}) will be marked stale.`, 'spec-warning'));
+
+  const actions = document.createElement('div');
+  actions.style.cssText = 'display: flex; gap: 8px; margin-top: 12px; align-items: center;';
 
   const commitBtn = document.createElement('button');
   commitBtn.id = 'commit-edit-proposal-btn';
   commitBtn.className = 'specification-commit';
-  commitBtn.textContent = `Commit edit as revision ${project.revision + 1}`;
+  commitBtn.type = 'button';
+  commitBtn.textContent = `Accept & commit as R${nextRevision}`;
+  commitBtn.disabled = !proposal.can_commit;
   commitBtn.addEventListener('click', () => commitEditProposal(proposal));
-  panel.append(commitBtn);
+  actions.append(commitBtn);
+
+  const rejectBtn = document.createElement('button');
+  rejectBtn.id = 'reject-edit-proposal-btn';
+  rejectBtn.className = 'text-button';
+  rejectBtn.type = 'button';
+  rejectBtn.textContent = 'Reject proposal';
+  rejectBtn.style.cssText = 'color: #ff8585; margin-left: 8px;';
+  rejectBtn.addEventListener('click', () => {
+    panel.hidden = true;
+    panel.replaceChildren();
+    required('intake-result').textContent = `Parameter edit proposal was rejected. Project remains at revision ${project?.revision}.`;
+  });
+  actions.append(rejectBtn);
+
+  panel.append(actions);
 }
 
 async function commitEditProposal(proposal) {
@@ -1244,35 +1283,32 @@ async function commitEditProposal(proposal) {
   const button = byId('commit-edit-proposal-btn');
   if (button) button.disabled = true;
   const previousRevision = project.revision;
-  required('intake-result').textContent = `Committing ${proposal.parameter_label} edit from revision ${previousRevision}…`;
+  const familyName = proposal.family || proposal.family_id || project.family;
+  required('intake-result').textContent = `Committing ${proposal.parameter_label || proposal.parameter_name} edit from revision ${previousRevision}…`;
   try {
-    if (proposal.family_id === 'electric_vehicle') {
-      const payload = {
-        [proposal.parameter_name]: proposal.proposed_value,
-        expected_revision: previousRevision,
-      };
-      const result = await request('/project/vehicle', {
+    const payload = {
+      [proposal.parameter_name]: proposal.proposed_value,
+      expected_revision: proposal.expected_revision ?? previousRevision,
+    };
+    let result;
+    if (familyName === 'electric_vehicle') {
+      result = await request('/project/vehicle', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      project = result;
     } else {
-      const payload = {
-        [proposal.parameter_name]: proposal.proposed_value,
-        expected_revision: previousRevision,
-      };
-      const result = await request('/project', {
+      result = await request('/project', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      project = result;
     }
+    project = result;
     fill();
     build();
     loadArtifacts(project.revision);
-    required('intake-result').textContent = `Successfully committed revision ${project.revision}. Geometry regenerated. Prior artifacts are now stale.`;
+    required('intake-result').textContent = `Successfully committed revision ${project.revision}. Geometry regenerated. Prior revision artifacts (R${previousRevision}) are now stale.`;
     byId('edit-proposal-review').hidden = true;
   } catch (error) {
     required('intake-result').textContent = `Failed to commit parameter edit: ${error.message}`;

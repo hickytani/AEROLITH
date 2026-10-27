@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet
@@ -529,20 +529,26 @@ async def interpret(request: InterpretRequest):
         try:
             result = await extract(request.text, provider)
             result_dict = result.model_dump(mode="json")
-            result_dict["model_status"] = "PROPOSED_REQUIRES_REVIEW"
-            result_dict["inference_succeeded"] = True
+            result_dict["model_status"] = "PROPOSED_REQUIRES_REVIEW" if result.inference_path == "local_slm" else "FALLBACK_TO_DETERMINISTIC"
+            result_dict["inference_succeeded"] = result.inference_path == "local_slm"
+            result_dict["inference_path"] = result.inference_path
             return result_dict
         except ModelUnavailable as exc:
             fallback = (await extract(request.text)).model_dump(mode="json")
             fallback["model_status"] = exc.code
             fallback["inference_succeeded"] = False
+            fallback["inference_path"] = "deterministic_fallback"
             return fallback
         except ValueError:
             fallback = (await extract(request.text)).model_dump(mode="json")
             fallback["model_status"] = "INVALID_MODEL_OUTPUT"
             fallback["inference_succeeded"] = False
+            fallback["inference_path"] = "deterministic_fallback"
             return fallback
-    return (await extract(request.text)).model_dump(mode="json")
+    result = await extract(request.text)
+    result_dict = result.model_dump(mode="json")
+    result_dict["inference_path"] = "deterministic"
+    return result_dict
 
 
 class ChangeImpactRequest(BaseModel):
@@ -577,8 +583,18 @@ def project_change_impact(request: ChangeImpactRequest):
 
 class ProposeEditRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    text: str = Field(min_length=1, max_length=2000)
+    text: str | None = Field(default=None, max_length=2000)
+    prompt: str | None = Field(default=None, max_length=2000)
     expected_revision: int | None = None
+
+    @model_validator(mode="after")
+    def resolve_text(self):
+        query = (self.text or self.prompt or "").strip()
+        if not query:
+            raise ValueError("Edit request must provide a non-empty text or prompt.")
+        if self.text is None:
+            self.text = query
+        return self
 
 
 @app.post("/api/v1/project/propose-edit")
