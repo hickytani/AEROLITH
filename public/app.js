@@ -682,7 +682,7 @@ function renderSpecification(specification) {
     const header = document.createElement('div');
     header.style.cssText = 'display: flex; align-items: center; justify-content: space-between;';
     const labelSpan = textElement('span', `${parameter.meaning} · ${parameter.unit}`);
-    const sourceClass = (parameter.status === 'INVALID' ? 'invalid' : parameter.source === 'user-provided' ? 'explicit' : parameter.source === 'derived' ? 'derived' : parameter.source === 'assumed' ? 'assumed' : 'missing').toLowerCase();
+    const sourceClass = (parameter.status === 'CONTRADICTION' ? 'contradiction' : parameter.status === 'INVALID' ? 'invalid' : parameter.source === 'user-provided' ? 'explicit' : parameter.source === 'derived' ? 'derived' : parameter.source === 'assumed' ? 'assumed' : 'missing').toLowerCase();
     const pill = textElement('span', sourceClass.toUpperCase(), `grounding-pill ${sourceClass}`);
     header.append(labelSpan, pill);
     row.append(header);
@@ -707,6 +707,20 @@ function renderSpecification(specification) {
     if (parameter.evidence || definition) {
       const evidence = textElement('small', parameter.evidence ? `Evidence: “${parameter.evidence}”${parameter.source_span ? ` · prompt characters ${parameter.source_span.start}–${parameter.source_span.end}` : ''}` : '', 'spec-evidence');
       row.append(evidence);
+    }
+    if (parameter.derivation) {
+      const derivation = textElement('small', `Derivation / Basis: ${parameter.derivation}`, 'spec-evidence');
+      derivation.style.cssText = 'color: #0b69a3; display: block; margin-top: 2px;';
+      row.append(derivation);
+    } else if (parameter.source === 'assumed') {
+      const assumption = textElement('small', 'Assumption: standard engineering default applied because omitted from prompt.', 'spec-evidence');
+      assumption.style.cssText = 'color: #9c6800; display: block; margin-top: 2px;';
+      row.append(assumption);
+    }
+    if (parameter.status === 'CONTRADICTION') {
+      const contradiction = textElement('small', 'Contradiction: conflicting explicit values detected in prompt. Please clarify before committing.', 'spec-error');
+      contradiction.style.cssText = 'color: #c81e1e; font-weight: bold; display: block; margin-top: 2px;';
+      row.append(contradiction);
     }
     parameterList.append(row);
   }

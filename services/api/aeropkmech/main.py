@@ -429,6 +429,106 @@ def restore_demo_project():
     return response(candidate)
 
 
+class RestoreRevisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int | None = None
+
+
+@app.get("/api/v1/project/history")
+def get_project_history():
+    """Return the sequential, bounded audit history of all committed design revisions."""
+    current = store.load()
+    revisions = []
+    for entry in current.history:
+        rev = entry.get("revision")
+        d = entry.get("design", {})
+        revisions.append({
+            "revision": rev,
+            "changed_at": entry.get("changed_at"),
+            "family": d.get("family"),
+            "requirements": d.get("requirements", {}),
+            "restored_from_revision": entry.get("restored_from_revision"),
+            "is_active": False,
+        })
+    revisions.append({
+        "revision": current.revision,
+        "changed_at": current.updated_at,
+        "family": current.family,
+        "requirements": current.requirements.model_dump(exclude_none=True) if hasattr(current.requirements, "model_dump") else {},
+        "is_active": True,
+    })
+    return {
+        "current_revision": current.revision,
+        "total_revisions": len(revisions),
+        "history": revisions,
+    }
+
+
+@app.get("/api/v1/project/history/{revision}")
+def get_historical_revision(revision: int):
+    """Inspect the full design snapshot and derived parameters for any past revision."""
+    current = store.load()
+    if revision == current.revision:
+        return response(current)
+    for entry in current.history:
+        if entry.get("revision") == revision:
+            raw = entry.get("design")
+            if not raw:
+                break
+            if raw.get("family") == "electric_vehicle":
+                from .automotive import VehicleDesign
+                hist_design = VehicleDesign.model_validate(raw)
+            else:
+                hist_design = Design.model_validate(raw)
+            return response(hist_design)
+    raise HTTPException(status_code=404, detail=f"Revision {revision} not found in project history.")
+
+
+@app.post("/api/v1/project/restore/{revision}")
+def restore_historical_revision(revision: int, request: RestoreRevisionRequest | None = None):
+    """Explicitly restore a past revision as a new canonical revision, preserving history."""
+    current = store.load()
+    if request and request.expected_revision is not None and request.expected_revision != current.revision:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Project revision advanced from {request.expected_revision} to {current.revision}.",
+            headers={"X-Design-Revision": str(current.revision)},
+        )
+    if revision == current.revision:
+        raise HTTPException(status_code=400, detail=f"Revision {revision} is already the active revision.")
+    target_entry = None
+    for entry in current.history:
+        if entry.get("revision") == revision:
+            target_entry = entry
+            break
+    if not target_entry or "design" not in target_entry:
+        raise HTTPException(status_code=404, detail=f"Revision {revision} not found in project history.")
+
+    historical_raw = target_entry["design"]
+    new_revision = current.revision + 1
+    new_history = [*current.history, {
+        "revision": current.revision,
+        "changed_at": current.updated_at,
+        "design": current.model_dump(mode="json", exclude={"history"}),
+        "restored_from_revision": revision,
+    }]
+    if historical_raw.get("family") == "electric_vehicle":
+        from .automotive import VehicleDesign
+        candidate = VehicleDesign.model_validate(historical_raw)
+    else:
+        candidate = Design.model_validate(historical_raw)
+    candidate.revision = new_revision
+    candidate.history = new_history
+    candidate.updated_at = datetime.now(timezone.utc).isoformat()
+    candidate.parameter_quantities = {}
+    candidate.parameter_records = {}
+
+    family = get_family(candidate.family, candidate.schema_version)
+    family.validate_state(candidate)
+    save_candidate_at_revision(candidate, current.revision)
+    return response(candidate)
+
+
 @app.post("/api/v1/learn/spur-gear/experiment")
 def gear_experiment(parameters: GearExperimentRequest):
     """Evaluate lesson inputs with the real deterministic gear equations, without persistence."""

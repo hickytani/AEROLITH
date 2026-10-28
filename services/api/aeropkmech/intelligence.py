@@ -58,7 +58,7 @@ class SpecificationParameter(BaseModel):
     source: Literal["user-provided", "derived", "assumed", "missing"]
     evidence: str | None
     derivation: str | None = None
-    status: Literal["PROPOSED", "DERIVED", "ASSUMED", "MISSING", "INVALID"]
+    status: Literal["PROPOSED", "DERIVED", "ASSUMED", "MISSING", "INVALID", "CONTRADICTION"]
     canonical_target: str | None = None
     source_span: dict[str, int | str] | None = None
     constraints: list[str] = Field(default_factory=list)
@@ -444,17 +444,23 @@ def propose_specification(text: str) -> EngineeringSpecification:
     parameters: list[SpecificationParameter] = []
     for name, (meaning, unit) in _PARAMETER_INFO.items():
         value = values[name]
+        is_contradiction = any(name in c and "Conflicting explicit values" in c for c in conflicts)
         is_derived_ratio = (
             name == "gear_ratio"
             and name in extraction.derivations
         )
         assumed_pressure = name == "pressure_angle_deg" and name not in extraction.evidence
-        source: Literal["user-provided", "derived", "assumed", "missing"] = (
-            "missing" if value is None else "assumed" if assumed_pressure else "derived" if is_derived_ratio else "user-provided"
-        )
-        status: Literal["PROPOSED", "DERIVED", "ASSUMED", "MISSING", "INVALID"] = (
-            "INVALID" if name in invalid_fields else "MISSING" if value is None else "ASSUMED" if assumed_pressure else "DERIVED" if is_derived_ratio else "PROPOSED"
-        )
+        if is_contradiction:
+            value = None
+            source = "missing"
+            status = "CONTRADICTION"
+        else:
+            source = (
+                "missing" if value is None else "assumed" if assumed_pressure else "derived" if is_derived_ratio else "user-provided"
+            )
+            status = (
+                "INVALID" if name in invalid_fields else "MISSING" if value is None else "ASSUMED" if assumed_pressure else "DERIVED" if is_derived_ratio else "PROPOSED"
+            )
         parameters.append(SpecificationParameter(
             name=name,
             meaning=meaning,
@@ -636,6 +642,10 @@ def assess_field_grounding(field: str, value, text: str, extraction: "Extraction
     # If the extraction tells us it was derived
     if extraction is not None and field in extraction.derivations:
         return GroundingVerdict(field, "DERIVED", reason=extraction.derivations[field])
+
+    # If the field has a default assumption and extractor found no explicit evidence for it, it is ASSUMED
+    if extraction is not None and field in _ASSUMED_FIELDS and field not in extraction.evidence:
+        return GroundingVerdict(field, "ASSUMED", reason=_ASSUMED_FIELDS[field])
 
     # Check for explicit label+value evidence in text
     label_pats = _FIELD_LABEL_PATTERNS.get(field, [])

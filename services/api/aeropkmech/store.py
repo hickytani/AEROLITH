@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 from threading import RLock
+import time
 from uuid import uuid4
 
 from pydantic import ValidationError
@@ -57,22 +58,23 @@ def default_design() -> Design:
 
 
 def load() -> Design:
-    try:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise ProjectStateError(f"Project data directory is unavailable at {DATA_DIR}.") from exc
-    if not STATE_FILE.exists():
-        design = default_design()
-        save(design)
-        return design
-    try:
-        raw = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-        if raw.get("family") == "electric_vehicle":
-            from .automotive import VehicleDesign
-            return VehicleDesign.model_validate(raw)
-        return Design.model_validate(raw)
-    except (OSError, json.JSONDecodeError, ValidationError, TypeError) as exc:
-        raise ProjectStateError(f"Persisted project is unreadable or invalid at {STATE_FILE}.") from exc
+    with PROJECT_WRITE_LOCK:
+        try:
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ProjectStateError(f"Project data directory is unavailable at {DATA_DIR}.") from exc
+        if not STATE_FILE.exists():
+            design = default_design()
+            save(design)
+            return design
+        try:
+            raw = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            if raw.get("family") == "electric_vehicle":
+                from .automotive import VehicleDesign
+                return VehicleDesign.model_validate(raw)
+            return Design.model_validate(raw)
+        except (OSError, json.JSONDecodeError, ValidationError, TypeError) as exc:
+            raise ProjectStateError(f"Persisted project is unreadable or invalid at {STATE_FILE}.") from exc
 
 
 def save(design: Design) -> None:
@@ -114,9 +116,14 @@ def _save_locked(design: Design) -> None:
             stream.write(validated.model_dump_json(indent=2))
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(tmp, STATE_FILE)
-    except OSError as exc:
-        raise ProjectPersistenceError(f"Could not atomically commit project state at {STATE_FILE}.") from exc
+        for attempt in range(8):
+            try:
+                os.replace(tmp, STATE_FILE)
+                break
+            except OSError as exc:
+                if attempt == 7:
+                    raise ProjectPersistenceError(f"Could not atomically commit project state at {STATE_FILE}.") from exc
+                time.sleep(0.05 * (attempt + 1))
     finally:
         try:
             tmp.unlink(missing_ok=True)
