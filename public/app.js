@@ -679,7 +679,13 @@ function renderSpecification(specification) {
     const definition = specificationInputs[parameter.name];
     const row = document.createElement('label');
     row.className = `specification-parameter${parameter.status === 'INVALID' ? ' spec-invalid' : ''}`;
-    row.append(textElement('span', `${parameter.meaning} · ${parameter.unit}`));
+    const header = document.createElement('div');
+    header.style.cssText = 'display: flex; align-items: center; justify-content: space-between;';
+    const labelSpan = textElement('span', `${parameter.meaning} · ${parameter.unit}`);
+    const sourceClass = (parameter.status === 'INVALID' ? 'invalid' : parameter.source === 'user-provided' ? 'explicit' : parameter.source === 'derived' ? 'derived' : parameter.source === 'assumed' ? 'assumed' : 'missing').toLowerCase();
+    const pill = textElement('span', sourceClass.toUpperCase(), `grounding-pill ${sourceClass}`);
+    header.append(labelSpan, pill);
+    row.append(header);
     row.append(textElement('small', `${parameter.source.toUpperCase()} · ${parameter.status}`));
     if (definition && parameter.unit) {
       const input = document.createElement('input');

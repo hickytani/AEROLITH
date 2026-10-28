@@ -40,7 +40,7 @@ from .families import (
     get_family,
     list_families,
 )
-from .intelligence import ParameterEditProposal, extract, propose_parameter_edit, propose_specification
+from .intelligence import ParameterEditProposal, extract, propose_parameter_edit, propose_specification, assess_field_grounding, GroundingVerdict
 from .model_platform import (
     ComponentAnswer, InferenceStatus, ModelRegistry, ModelState, ModelUnavailable, OllamaProvider,
     OllamaRequirementProvider, component_context, configured_runtime_model, redact_sensitive, validate_split_files, validate_tool_proposal,
@@ -404,7 +404,7 @@ def initialize_project(request: FamilyInitializationRequest):
     candidate.id = f"local-{uuid.uuid4().hex[:12]}"
     candidate.parameter_records = {}
     candidate.revision = current.revision + 1
-    candidate.history = [*current.history, {"revision": current.revision, "changed_at": current.updated_at, "design": current.model_dump(mode="json")}]
+    candidate.history = [*current.history, {"revision": current.revision, "changed_at": current.updated_at, "design": current.model_dump(mode="json", exclude={"history"})}]
     candidate.updated_at = datetime.now(timezone.utc).isoformat()
     if candidate.family == "electric_vehicle":
         from .automotive import VehicleDesign
@@ -422,7 +422,7 @@ def restore_demo_project():
     candidate = store.default_design()
     candidate.parameter_records = {}
     candidate.revision = current.revision + 1
-    candidate.history = [*current.history, {"revision": current.revision, "changed_at": current.updated_at, "design": current.model_dump(mode="json")}]
+    candidate.history = [*current.history, {"revision": current.revision, "changed_at": current.updated_at, "design": current.model_dump(mode="json", exclude={"history"})}]
     candidate.updated_at = datetime.now(timezone.utc).isoformat()
     candidate = Design.model_validate(candidate.model_dump(mode="json"))
     store.save(candidate)
@@ -470,7 +470,7 @@ def edit_project(edit: EditRequest):
             headers={"X-Design-Revision": str(current.revision)},
         )
     candidate = current.model_copy(deep=True)
-    candidate.history.append({"revision": current.revision, "changed_at": current.updated_at, "design": current.model_dump(mode="json")})
+    candidate.history.append({"revision": current.revision, "changed_at": current.updated_at, "design": current.model_dump(mode="json", exclude={"history"})})
     if "pinion_teeth" in values:
         candidate.components[0].teeth = values.pop("pinion_teeth")
     if "gear_teeth" in values:
@@ -524,30 +524,42 @@ def edit_project(edit: EditRequest):
 async def interpret(request: InterpretRequest):
     model_name, _ = configured_runtime_model(MODEL_REGISTRY, os.environ.get("AEROPKMECH_OLLAMA_MODEL", ""))
     use_model = os.environ.get("AEROPKMECH_ENABLE_MODEL_EXTRACTION", "false").lower() == "true"
+    extracted_obj = None
     if model_name and use_model:
         provider = OllamaRequirementProvider(model_name, os.environ.get("AEROPKMECH_OLLAMA_URL", "http://127.0.0.1:11434"))
         try:
             result = await extract(request.text, provider)
+            extracted_obj = result
             result_dict = result.model_dump(mode="json")
             result_dict["model_status"] = "PROPOSED_REQUIRES_REVIEW" if result.inference_path == "local_slm" else "FALLBACK_TO_DETERMINISTIC"
             result_dict["inference_succeeded"] = result.inference_path == "local_slm"
             result_dict["inference_path"] = result.inference_path
-            return result_dict
         except ModelUnavailable as exc:
-            fallback = (await extract(request.text)).model_dump(mode="json")
+            extracted_obj = await extract(request.text)
+            fallback = extracted_obj.model_dump(mode="json")
             fallback["model_status"] = exc.code
             fallback["inference_succeeded"] = False
             fallback["inference_path"] = "deterministic_fallback"
-            return fallback
+            result_dict = fallback
         except ValueError:
-            fallback = (await extract(request.text)).model_dump(mode="json")
+            extracted_obj = await extract(request.text)
+            fallback = extracted_obj.model_dump(mode="json")
             fallback["model_status"] = "INVALID_MODEL_OUTPUT"
             fallback["inference_succeeded"] = False
             fallback["inference_path"] = "deterministic_fallback"
-            return fallback
-    result = await extract(request.text)
-    result_dict = result.model_dump(mode="json")
-    result_dict["inference_path"] = "deterministic"
+            result_dict = fallback
+    else:
+        result = await extract(request.text)
+        extracted_obj = result
+        result_dict = result.model_dump(mode="json")
+        result_dict["inference_path"] = "deterministic"
+
+    proposal_data = result_dict.get("proposal", {})
+    grounding = {}
+    for field, val in proposal_data.items():
+        verdict = assess_field_grounding(field, val, request.text, extraction=extracted_obj)
+        grounding[field] = verdict.as_dict()
+    result_dict["field_grounding"] = grounding
     return result_dict
 
 
@@ -623,7 +635,7 @@ def generate_vehicle_project(request: VehicleGenerationRequest):
     current = store.load()
     if request.expected_revision != current.revision:
         raise HTTPException(status_code=409, detail=f"Project revision advanced from {request.expected_revision} to {current.revision}.", headers={"X-Design-Revision": str(current.revision)})
-    history = [*current.history, {"revision":current.revision,"changed_at":current.updated_at,"design":current.model_dump(mode="json")}]
+    history = [*current.history, {"revision":current.revision,"changed_at":current.updated_at,"design":current.model_dump(mode="json", exclude={"history"})}]
     try:
         candidate = make_vehicle_design(request, current.revision + 1, history)
     except Exception as exc:

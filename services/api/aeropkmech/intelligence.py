@@ -248,12 +248,12 @@ def extract_local(text: str) -> Extraction:
 
     tooth_patterns = {
         "pinion_teeth": [
-            r"(?:pinion|driver)\s*(?:of\s*)?(?:teeth|tooth)?\s*(?:=|:|is|of)?\s*(\d+)\s*(?:teeth|tooth)?\b",
-            r"(\d+)\s*(?:teeth|tooth)\s*(?:pinion|driver)\b",
+            r"(?:pinion|driver)\s*(?:of|with|has)?\s*(?:teeth|tooth)?\s*(?:=|:|is|of)?\s*(\d+)[-\s]*(?:teeth|tooth)?\b",
+            r"(\d+)[-\s]*(?:teeth|tooth)?\s*(?:on\s+(?:the\s+)?|for\s+(?:the\s+)?|in\s+(?:the\s+)?)?\s*(?:pinion|driver)\b",
         ],
         "gear_teeth": [
-            r"(?:driven\s+)?gear\s*(?:of\s*)?(?:teeth|tooth)?\s*(?:=|:|is|of)?\s*(\d+)\s*(?:teeth|tooth)?\b",
-            r"(\d+)\s*(?:teeth|tooth)\s+(?:driven\s+)?gear\b",
+            r"(?:driven\s+)?gear\s*(?:of|with|has)?\s*(?:teeth|tooth)?\s*(?:=|:|is|of)?\s*(\d+)[-\s]*(?:teeth|tooth)?\b",
+            r"(\d+)[-\s]*(?:teeth|tooth)?\s*(?:on\s+(?:the\s+)?|for\s+(?:the\s+)?|in\s+(?:the\s+)?)?\s*(?:driven\s+)?gear\b",
         ],
     }
     for key, patterns in tooth_patterns.items():
@@ -550,8 +550,121 @@ def propose_specification(text: str) -> EngineeringSpecification:
     )
 
 
+class GroundingVerdict:
+    """Per-field grounding assessment returned by `assess_field_grounding`.
+
+    source_class values:
+    - "EXPLICIT"      — a numeric value was found with the expected label in the text
+    - "DERIVED"       — value is mathematically derivable from other explicit fields
+    - "ASSUMED"       — value not present; a safe default may be applied (e.g. pressure_angle=20)
+    - "MISSING"       — value required but absent; no default is appropriate
+    - "CONTRADICTION" — multiple conflicting values were found in the text
+    """
+
+    __slots__ = ("field", "source_class", "evidence_span", "reason")
+
+    def __init__(self, field: str, source_class: str, evidence_span: str | None = None, reason: str | None = None):
+        self.field = field
+        self.source_class = source_class  # EXPLICIT | DERIVED | ASSUMED | MISSING | CONTRADICTION
+        self.evidence_span = evidence_span
+        self.reason = reason
+
+    def is_grounded(self) -> bool:
+        """Return True when the field has explicit, derived, or assumed backing."""
+        return self.source_class in {"EXPLICIT", "DERIVED", "ASSUMED"}
+
+    def as_dict(self) -> dict:
+        return {
+            "field": self.field,
+            "source_class": self.source_class,
+            "evidence_span": self.evidence_span,
+            "reason": self.reason,
+        }
+
+
+# Field-specific label patterns — each entry is (required_labels, value_pattern)
+# required_labels: at least one must be present in the text near the value
+_FIELD_LABEL_PATTERNS: dict[str, list[str]] = {
+    "pinion_teeth": [
+        r"(?:pinion|driver)\s*(?:of\s*)?(?:teeth|tooth)?\s*(?:=|:|is|of)?\s*\d+",
+        r"\d+\s*(?:teeth|tooth)\s*(?:pinion|driver)",
+    ],
+    "gear_teeth": [
+        r"(?:driven\s+)?gear\s*(?:of\s*)?(?:teeth|tooth)?\s*(?:=|:|is|of)?\s*\d+",
+        r"\d+\s*(?:teeth|tooth)\s+(?:driven\s+)?gear",
+    ],
+    "gear_ratio": [r"(?:gear\s+)?ratio\s*(?:of|is|=|:)?\s*\d+"],
+    "input_torque_Nm": [r"\d+(?:\.\d+)?\s*(?:N\s*mm|N[·.*]?\s*m|Nm)", r"torque\s*(?:of|is|=|:)?\s*\d+"],
+    "input_speed_rpm": [r"\d+(?:\.\d+)?\s*rpm", r"speed\s*(?:of|is|=|:)?\s*\d+"],
+    "module_mm": [r"module\s*(?:of|is|=|:)?\s*\d+", r"\d+(?:\.\d+)?\s*mm\s*module"],
+    "face_width_mm": [r"face\s+width\s*(?:of|is|=|:)?\s*\d+", r"\d+(?:\.\d+)?\s*mm\s*(?:face\s+width|width)"],
+    "pressure_angle_deg": [r"pressure\s+angle\s*(?:of|is|=|:)?\s*\d+", r"\d+\s*(?:degrees?|deg|°)\s*pressure"],
+    "bore_diameter_mm": [r"bore\s*(?:diameter)?\s*(?:of|is|=|:)?\s*\d+", r"\d+(?:\.\d+)?\s*mm\s*bore"],
+    "keyway_width_mm": [r"keyway\s*(?:slot\s*)?(?:width|w)\s*(?:of|is|=|:)?\s*\d+", r"keyway\s*\d+\s*[xX*]\s*\d+"],
+    "keyway_depth_mm": [r"keyway\s*(?:slot\s*)?(?:depth|d)\s*(?:of|is|=|:)?\s*\d+", r"keyway\s*\d+\s*[xX*]\s*\d+"],
+    "hub_diameter_mm": [r"hub\s*(?:outside\s*)?(?:diameter|OD)\s*(?:of|is|=|:)?\s*\d+"],
+    "hub_length_mm": [r"hub\s*(?:length|extension|height)\s*(?:of|is|=|:)?\s*\d+"],
+}
+
+# Fields that can be derived from other fields (no explicit mention required)
+_DERIVABLE_FIELDS: set[str] = {"gear_ratio"}
+
+# Fields that have safe assumed defaults (no explicit mention required for a valid spec)
+_ASSUMED_FIELDS: dict[str, str] = {"pressure_angle_deg": "defaults to 20° when omitted"}
+
+
+def assess_field_grounding(field: str, value, text: str, extraction: "Extraction | None" = None) -> GroundingVerdict:
+    """Return a structured GroundingVerdict for a single extracted field.
+
+    Args:
+        field: canonical parameter name (e.g. "module_mm")
+        value: the value the extractor produced (None → not extracted)
+        text:  the raw prompt text
+        extraction: optional Extraction result for conflict/derivation information
+    """
+    # Contradiction: multiple conflicting explicit values
+    if extraction is not None:
+        for conflict in extraction.conflicts:
+            if field in conflict and "Conflicting explicit values" in conflict:
+                return GroundingVerdict(field, "CONTRADICTION", reason=conflict)
+
+    if value is None:
+        if field in _ASSUMED_FIELDS:
+            return GroundingVerdict(field, "ASSUMED", reason=_ASSUMED_FIELDS[field])
+        return GroundingVerdict(field, "MISSING", reason="No value extracted and no safe default applies.")
+
+    # If the extraction tells us it was derived
+    if extraction is not None and field in extraction.derivations:
+        return GroundingVerdict(field, "DERIVED", reason=extraction.derivations[field])
+
+    # Check for explicit label+value evidence in text
+    label_pats = _FIELD_LABEL_PATTERNS.get(field, [])
+    for pat in label_pats:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            return GroundingVerdict(field, "EXPLICIT", evidence_span=m.group(0))
+
+    # Fallback to broad keyword check for the field name appearing somewhere nearby
+    # If the value appears numerically in the text we treat it as weakly explicit
+    if value is not None:
+        val_str = str(int(value)) if isinstance(value, float) and value == int(value) else str(value)
+        if val_str in text:
+            if field in _DERIVABLE_FIELDS:
+                return GroundingVerdict(field, "DERIVED", reason="Numeric value found in text, derivable.")
+            return GroundingVerdict(field, "EXPLICIT", evidence_span=val_str, reason="Value appears in text without explicit label.")
+
+    if field in _DERIVABLE_FIELDS:
+        return GroundingVerdict(field, "DERIVED", reason="Derived from other stated fields.")
+
+    if field in _ASSUMED_FIELDS:
+        return GroundingVerdict(field, "ASSUMED", reason=_ASSUMED_FIELDS[field])
+
+    return GroundingVerdict(field, "MISSING", reason="Value not explicitly grounded in prompt text.")
+
+
 def check_field_grounded_in_text(field: str, text: str) -> bool:
-    """Validate whether an extracted field is explicitly grounded in the prompt text."""
+    """Backward-compatible wrapper — returns True when the field has any supporting evidence in text."""
+    # Broad keyword presence check (used by SLM sanitization)
     patterns = {
         "pinion_teeth": [r"\bpinion\b", r"\bdriver\b"],
         "gear_teeth": [r"\bgear\b", r"\bdriven\b"],
@@ -568,7 +681,10 @@ def check_field_grounded_in_text(field: str, text: str) -> bool:
         "hub_length_mm": [r"\bhub\b"],
     }
     pats = patterns.get(field, [])
-    return any(re.search(p, text, re.IGNORECASE) for p in pats)
+    if any(re.search(p, text, re.IGNORECASE) for p in pats):
+        return True
+    # Also accept if the field is derivable or assumed
+    return field in _DERIVABLE_FIELDS or field in _ASSUMED_FIELDS
 
 
 async def extract(text: str, provider: RequirementProvider | None = None) -> Extraction:
@@ -603,7 +719,9 @@ async def extract(text: str, provider: RequirementProvider | None = None) -> Ext
             derivations=local.derivations,
             requires_confirmation=True,
         )
-    except Exception:
+    except Exception as exc:
+        if type(exc).__name__ == "ModelUnavailable" or isinstance(exc, ValueError):
+            raise
         fallback = local.model_copy(deep=True)
         fallback.inference_path = "deterministic_fallback"
         return fallback

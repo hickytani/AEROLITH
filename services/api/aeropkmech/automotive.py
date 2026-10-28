@@ -841,7 +841,7 @@ def propagate_vehicle_edits(design: VehicleDesign, changes: dict[str, float]) ->
             candidate.assumptions.append(f"{name}={value.value:g} {value.unit} is an assumed, propagated conceptual-geometry value.")
     candidate.revision=design.revision+1
     candidate.updated_at=datetime.now(timezone.utc).isoformat()
-    candidate.history=[*design.history,{"revision":design.revision,"changed_at":design.updated_at,"design":design.model_dump(mode="json")}]
+    candidate.history=[*design.history,{"revision":design.revision,"changed_at":design.updated_at,"design":design.model_dump(mode="json", exclude={"history"})}]
     candidate.parameter_quantities = {}
     candidate.parameter_records = {}
     candidate=VehicleDesign.model_validate(candidate.model_dump(mode="json"))

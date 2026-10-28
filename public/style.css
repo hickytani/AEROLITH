@@ -67,6 +67,21 @@ button:disabled { opacity: .58; cursor: wait; }
 .specification-parameter input { height: 38px; font-size: 14px; }
 .specification-parameter output { display: block; margin-top: 4px; font: 14px var(--font-mono); }
 .specification-parameter .spec-evidence { margin-top: 4px; overflow-wrap: anywhere; color: #526575; font-size: 12px; }
+.grounding-pill {
+  display: inline-block;
+  font: 700 12px/1.2 var(--font-mono);
+  padding: 2px 6px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  vertical-align: middle;
+  margin-left: 6px;
+}
+.grounding-pill.explicit { background: #e6f7ec; color: #167a3a; border: 1px solid #a3e2b8; }
+.grounding-pill.derived { background: #e6f4fc; color: #0b69a3; border: 1px solid #99d2f2; }
+.grounding-pill.assumed { background: #fef8e7; color: #9c6800; border: 1px solid #fbd888; }
+.grounding-pill.missing { background: #fde8e8; color: #c81e1e; border: 1px solid #f8b4b4; }
+.grounding-pill.contradiction, .grounding-pill.invalid { background: #fdf2f8; color: #9d174d; border: 1px solid #fbcfe8; }
 .spec-invalid { border-left: 3px solid var(--danger); padding-left: 8px; }
 .specification-review .spec-warning { color: #704f17; }
 .specification-review .spec-error { color: #812d26; }
