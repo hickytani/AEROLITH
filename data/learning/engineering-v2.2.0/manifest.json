@@ -1,0 +1,25 @@
+{
+  "schema_version": "2.0",
+  "dataset_version": "engineering-v2.2.0",
+  "purpose": "Specialist engineering dataset for requirement extraction, constraint interpretation, assembly planning, tool use, component understanding, change impact, failure handling, and engineering truth preservation.",
+  "license": "CC0-1.0",
+  "split_policy": "Strict disjoint splits. No example or duplicate prompt leaks across train, validation, or test sets.",
+  "supported_categories": [
+    "requirement_extraction",
+    "constraint_interpretation",
+    "assembly_planning",
+    "engineering_tool_use",
+    "component_understanding",
+    "change_impact",
+    "failure_handling",
+    "engineering_explanation"
+  ],
+  "quality_status": "reviewed_engineering_fixtures_v2.2",
+  "record_counts": {
+    "train": 51,
+    "validation": 19,
+    "test": 19
+  },
+  "total_records": 89,
+  "training_claim": "Preflight measured on RTX 3050 6GB; training safety-gated by memory constraints. Baseline evaluation recorded."
+}

@@ -49,7 +49,12 @@ def memory_bytes() -> tuple[int, int]:
     return total, available
 
 
-def check_hardware() -> dict:
+def check_hardware(
+    min_vram_mib: int = MIN_VRAM_MIB,
+    min_ram_gib: float = MIN_RAM_GIB,
+    min_available_ram_gib: float = MIN_AVAILABLE_RAM_GIB,
+    min_free_disk_gib: float = MIN_FREE_GIB,
+) -> dict:
     try:
         total_bytes, available_bytes = memory_bytes()
         memory_gib = round(total_bytes / (1024**3), 2)
@@ -77,26 +82,36 @@ def check_hardware() -> dict:
     blockers = []
     if not gpu["available"]:
         blockers.append(gpu.get("detection_error", "No supported NVIDIA GPU was detected by nvidia-smi."))
-    elif gpu["vram_mib"] < MIN_VRAM_MIB:
-        blockers.append(f"Detected {gpu['vram_mib']} MiB VRAM; this experiment conservatively requires {MIN_VRAM_MIB} MiB free-capable device memory.")
-    if gpu.get("free_vram_mib_at_check") is not None and gpu["free_vram_mib_at_check"] < MIN_VRAM_MIB:
-        blockers.append(f"Currently free GPU memory is {gpu['free_vram_mib_at_check']} MiB; preflight requires {MIN_VRAM_MIB} MiB available before model loading.")
-    if memory_gib < MIN_RAM_GIB:
-        blockers.append(f"System RAM is {memory_gib} GiB; minimum configured threshold is {MIN_RAM_GIB} GiB.")
-    if available_memory_gib < MIN_AVAILABLE_RAM_GIB:
-        blockers.append(f"Currently available system RAM is {available_memory_gib} GiB; the training preflight requires {MIN_AVAILABLE_RAM_GIB} GiB free before model loading.")
+    elif gpu["vram_mib"] < min_vram_mib:
+        blockers.append(f"Detected {gpu['vram_mib']} MiB VRAM; this experiment conservatively requires {min_vram_mib} MiB free-capable device memory.")
+    if gpu.get("free_vram_mib_at_check") is not None and gpu["free_vram_mib_at_check"] < min_vram_mib:
+        blockers.append(f"Currently free GPU memory is {gpu['free_vram_mib_at_check']} MiB; preflight requires {min_vram_mib} MiB available before model loading.")
+    if memory_gib < min_ram_gib:
+        blockers.append(f"System RAM is {memory_gib} GiB; minimum configured threshold is {min_ram_gib} GiB.")
+    if available_memory_gib < min_available_ram_gib:
+        blockers.append(f"Currently available system RAM is {available_memory_gib} GiB; the training preflight requires {min_available_ram_gib} GiB free before model loading.")
     if disk_error:
         blockers.append("Free disk detection failed; training is blocked because available storage cannot be verified.")
-    elif disk_gib < MIN_FREE_GIB:
-        blockers.append(f"Free disk is {disk_gib} GiB; minimum configured threshold is {MIN_FREE_GIB} GiB.")
+    elif disk_gib < min_free_disk_gib:
+        blockers.append(f"Free disk is {disk_gib} GiB; minimum configured threshold is {min_free_disk_gib} GiB.")
     return {"ready": not blockers, "gpu": gpu, "system_ram_gib": memory_gib, "available_ram_gib_at_check": available_memory_gib, "free_disk_gib": disk_gib,
-              "thresholds": {"vram_mib": MIN_VRAM_MIB, "ram_gib": MIN_RAM_GIB, "available_ram_gib": MIN_AVAILABLE_RAM_GIB, "free_disk_gib": MIN_FREE_GIB},
+              "thresholds": {"vram_mib": min_vram_mib, "ram_gib": min_ram_gib, "available_ram_gib": min_available_ram_gib, "free_disk_gib": min_free_disk_gib},
               "blockers": blockers, "training_started": False,
               "note": "Preflight is conservative; it does not establish CUDA/PyTorch compatibility or guarantee training fits."}
 
 
 def main() -> int:
-    report = check_hardware()
+    import argparse
+    parser = argparse.ArgumentParser(description="Conservative hardware check")
+    parser.add_argument("--model-size", choices=["4b", "0.6b"], default="4b", help="Model target for thresholds")
+    parser.add_argument("--vram-mib", type=int, default=None)
+    args = parser.parse_args()
+    if args.model_size == "0.6b":
+        vram = args.vram_mib or 4096
+        report = check_hardware(min_vram_mib=vram, min_ram_gib=12, min_available_ram_gib=1.0)
+    else:
+        vram = args.vram_mib or MIN_VRAM_MIB
+        report = check_hardware(min_vram_mib=vram)
     print(json.dumps(report, indent=2))
     return 0 if report["ready"] else 2
 

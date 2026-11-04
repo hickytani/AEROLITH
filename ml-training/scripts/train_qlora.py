@@ -21,7 +21,11 @@ def run(config_path: Path) -> None:
     dataset_report = validate(dataset)
     if dataset_report["dataset_version"] != config["dataset_version"]:
         raise ValueError("Configured dataset version does not match its manifest.")
-    hardware = check_hardware()
+    is_small_model = any(token in config.get("base_model", "") for token in ("0.5B", "0.6B", "0.5b", "0.6b"))
+    if is_small_model:
+        hardware = check_hardware(min_vram_mib=4096, min_ram_gib=12, min_available_ram_gib=1.0)
+    else:
+        hardware = check_hardware()
     print(json.dumps(hardware, indent=2))
     if not hardware["ready"]:
         raise RuntimeError("Hardware preflight failed; no model was downloaded and no training was started.")
