@@ -10,6 +10,7 @@ Set LOCAL_MODEL_PATH env var to load the base model from a local directory.
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
 import json
 import os
@@ -31,16 +32,15 @@ class EngineeringDataset(Dataset):
     def __init__(self, jsonl_path: Path, tokenizer, max_length: int = 256):
         self.examples = []
         raw_lines = jsonl_path.read_text(encoding="utf-8").splitlines()
+        system_msg = (
+            "You are AEROLITH's engineering parameter extraction and constraint model. "
+            "Output one valid JSON object adhering strictly to the required schema. "
+            "Never invent unmentioned dimensions or make unsubstantiated safety claims."
+        )
         for line in raw_lines:
             if not line.strip():
                 continue
             item = json.loads(line)
-            # Format as Qwen chat template
-            system_msg = (
-                "You are AEROLITH's engineering parameter extraction and constraint model. "
-                "Output one valid JSON object adhering strictly to the required schema. "
-                "Never invent unmentioned dimensions or make unsubstantiated safety claims."
-            )
             user_payload = {
                 "task_category": item["task_category"],
                 "input": item["input"],
@@ -54,22 +54,29 @@ class EngineeringDataset(Dataset):
                 {"role": "assistant", "content": json.dumps(assistant_payload, ensure_ascii=False)},
             ]
 
-            rendered = tokenizer.apply_chat_template(messages, tokenize=False)
-            encoded = tokenizer(
-                rendered,
-                max_length=max_length,
-                truncation=True,
-                padding=False,
-                return_tensors="pt",
-            )
-            input_ids = encoded["input_ids"].squeeze(0)
-            attention_mask = encoded["attention_mask"].squeeze(0)
+            rendered_full = tokenizer.apply_chat_template(messages, tokenize=False)
+            rendered_prompt = tokenizer.apply_chat_template(messages[:2], tokenize=False, add_generation_prompt=True)
+
+            enc_full = tokenizer(rendered_full, max_length=max_length, truncation=True, padding=False, return_tensors="pt")
+            enc_prompt = tokenizer(rendered_prompt, return_tensors="pt")
+
+            input_ids = enc_full["input_ids"].squeeze(0)
+            attention_mask = enc_full["attention_mask"].squeeze(0)
+            prompt_len = enc_prompt["input_ids"].shape[1]
+
             labels = input_ids.clone()
+            labels[:prompt_len] = -100  # Mask out system + user prompt tokens
+
+            supervised_count = (labels != -100).sum().item()
+            assert supervised_count > 0, f"Sample {item['id']} has no supervised tokens!"
 
             self.examples.append({
+                "id": item["id"],
                 "input_ids": input_ids,
                 "attention_mask": attention_mask,
                 "labels": labels,
+                "supervised_tokens": supervised_count,
+                "prompt_tokens": prompt_len,
             })
 
     def __len__(self) -> int:
@@ -174,6 +181,7 @@ def train(config_path: Path) -> dict:
     )
 
     # 6. Training Loop
+    torch.set_num_threads(4)
     print(f"\n5. Executing training loop ({max_steps} steps, lr={learning_rate})...", flush=True)
     lora_model.train()
     step = 0
@@ -197,26 +205,36 @@ def train(config_path: Path) -> dict:
             loss = outputs.loss / grad_accum_steps
             loss.backward()
 
+            grad_norm = 0.0
+            for p in lora_model.parameters():
+                if p.requires_grad and p.grad is not None:
+                    grad_norm += p.grad.float().norm().item() ** 2
+            grad_norm = grad_norm ** 0.5
+
             if (step + 1) % grad_accum_steps == 0 or (step + 1) == max_steps:
                 optimizer.step()
                 optimizer.zero_grad()
 
             raw_loss = outputs.loss.item()
-            step_losses.append({"step": step + 1, "loss": round(raw_loss, 4)})
+            step_losses.append({"step": step + 1, "loss": round(raw_loss, 4), "grad_norm": round(grad_norm, 4)})
             if (step + 1) % training_cfg.get("logging_steps", 1) == 0:
-                print(f"   Step {step + 1:2d}/{max_steps} | Loss: {raw_loss:.4f}", flush=True)
+                print(f"   Step {step + 1:2d}/{max_steps} | Loss: {raw_loss:.4f} | GradNorm: {grad_norm:.4f}", flush=True)
 
-            # Checkpoint after each step
-            lora_model.save_pretrained(str(output_dir))
-            tokenizer.save_pretrained(str(output_dir))
+            del outputs, loss
+            gc.collect()
+
+            save_steps = training_cfg.get("save_steps", max_steps)
+            if (step + 1) % save_steps == 0:
+                lora_model.save_pretrained(str(output_dir))
+                tokenizer.save_pretrained(str(output_dir))
 
             step += 1
 
     train_duration = time.perf_counter() - t_start
     print(f"   Training completed in {train_duration:.2f}s.", flush=True)
 
-    # 7. Validation Evaluation (first 5 samples for fast held-out loss)
-    val_limit = training_cfg.get("val_samples", 5)
+    # 7. Validation Evaluation (held-out validation samples)
+    val_limit = training_cfg.get("val_samples", len(val_dataset))
     print(f"\n6. Running validation evaluation on {val_limit} held-out validation samples...", flush=True)
     lora_model.eval()
     val_loss = 0.0
@@ -235,6 +253,8 @@ def train(config_path: Path) -> dict:
             )
             val_loss += outputs.loss.item()
             val_batches += 1
+            del outputs
+            gc.collect()
 
     mean_val_loss = val_loss / max(val_batches, 1)
     print(f"   Mean Validation Loss: {mean_val_loss:.4f}", flush=True)
@@ -272,8 +292,8 @@ def train(config_path: Path) -> dict:
 
     # 9. Verify Checkpoint Reload
     print("\n8. Verifying saved checkpoint can be reloaded...", flush=True)
-    del lora_model  # free training model RAM before loading a second copy
-    import gc; gc.collect()
+    del lora_model, model  # free training model RAM before loading a second copy
+    gc.collect()
     t0_reload = time.perf_counter()
     reloaded_base, _ = load_model_no_mmap(model_source, target_dtype=torch.bfloat16, verbose=False)
     reloaded_model = PeftModel.from_pretrained(reloaded_base, str(output_dir))
@@ -285,7 +305,7 @@ def train(config_path: Path) -> dict:
     print("9. Running post-training sample inference...", flush=True)
     test_prompt = "Spur gear pair: 20 pinion teeth, 60 gear teeth, module 2.5 mm, face width 30 mm."
     test_msg = [
-        {"role": "system", "content": "You are AEROLITH's engineering parameter model. Output one valid JSON object."},
+        {"role": "system", "content": "You are AEROLITH's engineering parameter extraction and constraint model. Output one valid JSON object adhering strictly to the required schema. Never invent unmentioned dimensions or make unsubstantiated safety claims."},
         {"role": "user", "content": json.dumps({"task_category": "requirement_extraction", "input": test_prompt})},
     ]
     test_encoded = tokenizer(
@@ -293,7 +313,7 @@ def train(config_path: Path) -> dict:
         return_tensors="pt",
     )
     with torch.no_grad():
-        gen_out = reloaded_model.generate(**test_encoded, max_new_tokens=150, temperature=0.1)
+        gen_out = reloaded_model.generate(**test_encoded, max_new_tokens=150, do_sample=False)
         gen_text = tokenizer.decode(gen_out[0][test_encoded["input_ids"].shape[1]:], skip_special_tokens=True)
     print(f"   Model Output:\n{gen_text}", flush=True)
 
@@ -308,11 +328,11 @@ if __name__ == "__main__":
         print(json.dumps(result, indent=2))
     finally:
         # Restore pyrefly if disabled
-        p_dis = Path(r"c:\Users\prasu\.antigravity-ide\extensions\meta.pyrefly-1.4.0-win32-x64\bin\pyrefly.exe.disabled")
-        p_orig = Path(r"c:\Users\prasu\.antigravity-ide\extensions\meta.pyrefly-1.4.0-win32-x64\bin\pyrefly.exe")
-        if p_dis.exists():
-            try:
+        try:
+            p_dis = Path(r"c:\Users\prasu\.antigravity-ide\extensions\meta.pyrefly-1.4.0-win32-x64\bin\pyrefly.exe.disabled")
+            p_orig = Path(r"c:\Users\prasu\.antigravity-ide\extensions\meta.pyrefly-1.4.0-win32-x64\bin\pyrefly.exe")
+            if p_dis.exists():
                 p_dis.rename(p_orig)
                 print("Restored pyrefly.exe successfully.")
-            except Exception as e:
-                print(f"Note: Could not restore pyrefly.exe: {e}")
+        except Exception as e:
+            print(f"Note: Could not restore pyrefly.exe: {e}")

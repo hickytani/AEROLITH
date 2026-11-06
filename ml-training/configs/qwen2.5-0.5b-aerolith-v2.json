@@ -1,0 +1,30 @@
+{
+  "config_version": "2.0",
+  "experiment_id": "qwen2.5-0.5b-aerolith-v2",
+  "base_model": "Qwen/Qwen2.5-0.5B-Instruct",
+  "base_revision": "7ae557604adf67be50417f59c2c2f167def9a775",
+  "dataset_version": "engineering-v2.2.0",
+  "dataset_path": "../../data/learning/engineering-v2.2.0",
+  "train_split": "train",
+  "validation_split": "validation",
+  "held_out_split": "test",
+  "output_dir": "../../.local-models/runs/qwen2.5-0.5b-aerolith-v2",
+  "lora": {
+    "rank": 8,
+    "alpha": 16,
+    "dropout": 0.0,
+    "target_modules": ["q_proj", "v_proj"]
+  },
+  "training": {
+    "seed": 42,
+    "max_steps": 10,
+    "learning_rate": 0.0005,
+    "per_device_train_batch_size": 1,
+    "gradient_accumulation_steps": 1,
+    "max_seq_length": 256,
+    "logging_steps": 1,
+    "save_steps": 5,
+    "val_samples": 19
+  }
+}
+
