@@ -107,6 +107,12 @@ def load_model_no_mmap(
             if verbose and (idx % 60 == 0 or idx == total):
                 print(f"    {idx}/{total} tensors loaded", flush=True)
 
+    # Tie weights if configured (e.g. Qwen2 ties lm_head.weight to embed_tokens.weight)
+    # Because lm_head.weight is not stored in safetensors when tied, failing to tie
+    # leaves lm_head on the meta device, causing all-zero logits and constant 11.9312 loss!
+    if getattr(config, "tie_word_embeddings", False):
+        model.tie_weights()
+
     gc.collect()
     total_params = sum(p.numel() for p in model.parameters())
     if verbose:
