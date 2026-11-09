@@ -110,7 +110,7 @@ def _dependencies(design: Design, kind: str) -> list[dict[str, str | int]]:
         else:
             from .automotive import VEHICLE_COMPONENT_PARAMETER_DEPENDENCIES
             keys = [*(f"vehicle_parameter:{name}" for name in VEHICLE_COMPONENT_PARAMETER_DEPENDENCIES.get(kind, ())), f"component_geometry:{kind}", "coordinate_frames"]
-    elif kind in {"assembly", "report", "gear-reference-drawing"}:
+    elif kind in {"assembly", "report", "gear-reference-drawing", "gear-bom"}:
         keys = ["spur_gear_pair:requirements", "assembly_geometry", "engineering_calculations"]
     else:
         keys = [f"spur_gear_pair:component:{kind}", "gear_pair_geometry"]

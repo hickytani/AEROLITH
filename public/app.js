@@ -294,17 +294,387 @@ function fitView(view = 'iso') {
   controls.update();
 }
 
+let activePreview = null;
+let validatingPreview = false;
+
 function setSelected(id) {
   selectedId = id;
   for (const button of document.querySelectorAll('.component-select')) {
-    button.setAttribute('aria-pressed', String(button.dataset.id === id));
+    button.setAttribute('aria-pressed', String(Boolean(id) && button.dataset.id === id));
   }
   for (const [meshId, mesh] of Object.entries(meshes)) {
+    const isSelected = Boolean(id) && meshId === id;
     const color = meshId === 'pinion' ? 0x00a8c7 : 0x9cabb5;
-    mesh.material.color.setHex(meshId === id ? 0x14c2dc : color);
-    mesh.material.emissive.setHex(meshId === id ? 0x05323b : 0x000000);
+    mesh.material.color.setHex(isSelected ? 0x14c2dc : color);
+    mesh.material.emissive.setHex(isSelected ? 0x084b59 : 0x000000);
   }
+  renderComponentEditor(selectedId);
   renderAssemblyInspector();
+}
+
+function renderComponentEditor(componentId) {
+  const container = byId('component-editor-content');
+  const title = byId('component-editor-title');
+  const subtitle = byId('component-editor-subtitle');
+  if (!container) return;
+
+  if (project?.family !== 'spur_gear_pair' || !componentId) {
+    if (title) title.textContent = 'Component parameter editor';
+    if (subtitle) subtitle.textContent = 'SELECT IN VIEWPORT TO EDIT';
+    container.replaceChildren();
+    const p = document.createElement('p');
+    p.className = 'assembly-evidence';
+    p.textContent = project?.family !== 'spur_gear_pair'
+      ? 'Component-level parametric editing is active for spur gear assemblies.'
+      : 'Select a component in the 3D viewport or list above to inspect and edit its parameters.';
+    container.append(p);
+    return;
+  }
+
+  const pComp = project.components[0];
+  const gComp = project.components[1];
+  const isPinion = componentId === 'pinion';
+  const comp = isPinion ? pComp : gComp;
+  const compDerived = project?.derived?.components?.find((c) => c.id === componentId) || {};
+  const req = project.requirements;
+
+  if (title) title.textContent = `${comp.name} parameter editor`;
+  if (subtitle) subtitle.textContent = `${componentId.toUpperCase()} · ${isPinion ? 'DRIVER' : 'DRIVEN'} · REVISION ${project.revision}`;
+
+  container.replaceChildren();
+
+  // Lifecycle status badge
+  const badge = document.createElement('div');
+  badge.id = 'component-lifecycle-badge';
+  badge.className = 'lifecycle-badge lifecycle-draft';
+  badge.textContent = 'STATUS: DRAFT (EDITING)';
+  container.append(badge);
+
+  // Form for editable parameters
+  const form = document.createElement('form');
+  form.id = 'component-edit-form';
+  form.onsubmit = (e) => e.preventDefault();
+
+  // Tooth count
+  const teethLabel = document.createElement('label');
+  teethLabel.textContent = isPinion ? 'Pinion teeth (z₁)' : 'Driven gear teeth (z₂)';
+  const teethInput = document.createElement('input');
+  teethInput.id = 'comp-edit-teeth';
+  teethInput.type = 'number';
+  teethInput.min = isPinion ? '8' : '8';
+  teethInput.max = isPinion ? '80' : '120';
+  teethInput.step = '1';
+  teethInput.value = String(comp.teeth);
+  teethInput.dataset.original = String(comp.teeth);
+  teethLabel.append(teethInput);
+  form.append(teethLabel);
+
+  // Module
+  const modLabel = document.createElement('label');
+  modLabel.innerHTML = 'Module (m) <span class="unit">mm</span>';
+  const modInput = document.createElement('input');
+  modInput.id = 'comp-edit-module';
+  modInput.type = 'number';
+  modInput.min = '0.5';
+  modInput.max = '6.0';
+  modInput.step = '0.1';
+  modInput.value = String(req.module_mm);
+  modInput.dataset.original = String(req.module_mm);
+  modLabel.append(modInput);
+  form.append(modLabel);
+
+  // Face width
+  const fwLabel = document.createElement('label');
+  fwLabel.innerHTML = 'Face width (b) <span class="unit">mm</span>';
+  const fwInput = document.createElement('input');
+  fwInput.id = 'comp-edit-width';
+  fwInput.type = 'number';
+  fwInput.min = '2';
+  fwInput.max = '60';
+  fwInput.step = '1';
+  fwInput.value = String(req.face_width_mm);
+  fwInput.dataset.original = String(req.face_width_mm);
+  fwLabel.append(fwInput);
+  form.append(fwLabel);
+
+  // Pressure angle
+  const paLabel = document.createElement('label');
+  paLabel.innerHTML = 'Pressure angle (α) <span class="unit">deg</span>';
+  const paInput = document.createElement('input');
+  paInput.id = 'comp-edit-pa';
+  paInput.type = 'number';
+  paInput.min = '14';
+  paInput.max = '30';
+  paInput.step = '0.5';
+  paInput.value = String(req.pressure_angle_deg ?? 20);
+  paInput.dataset.original = String(req.pressure_angle_deg ?? 20);
+  paLabel.append(paInput);
+  form.append(paLabel);
+
+  // Optional Bore diameter
+  const boreLabel = document.createElement('label');
+  boreLabel.innerHTML = 'Bore diameter (d_bore) <span class="unit">mm (optional)</span>';
+  const boreInput = document.createElement('input');
+  boreInput.id = 'comp-edit-bore';
+  boreInput.type = 'number';
+  boreInput.min = '3';
+  boreInput.max = '50';
+  boreInput.step = '0.5';
+  boreInput.value = req.bore_diameter_mm !== null && req.bore_diameter_mm !== undefined ? String(req.bore_diameter_mm) : '';
+  boreInput.dataset.original = boreInput.value;
+  boreInput.placeholder = 'Automatic bore derivation';
+  boreLabel.append(boreInput);
+  form.append(boreLabel);
+
+  container.append(form);
+
+  // Read-only derived values block
+  const derivedBlock = document.createElement('div');
+  derivedBlock.className = 'component-derived-props';
+  derivedBlock.id = 'comp-derived-props';
+  const d_p = compDerived.pitch_diameter_mm ? compDerived.pitch_diameter_mm.toFixed(2) : (req.module_mm * comp.teeth).toFixed(2);
+  const d_a = compDerived.outer_diameter_mm ? compDerived.outer_diameter_mm.toFixed(2) : (req.module_mm * (comp.teeth + 2)).toFixed(2);
+  const d_f = compDerived.root_diameter_mm ? compDerived.root_diameter_mm.toFixed(2) : (req.module_mm * (comp.teeth - 2.5)).toFixed(2);
+  const d_b = compDerived.base_diameter_mm ? compDerived.base_diameter_mm.toFixed(2) : (req.module_mm * comp.teeth * Math.cos(Math.PI * (req.pressure_angle_deg ?? 20) / 180)).toFixed(2);
+  const sigma_b = compDerived.bending_stress_MPa ? `${compDerived.bending_stress_MPa.toFixed(1)} MPa` : 'N/A';
+  const lewis_y = compDerived.lewis_form_factor ? compDerived.lewis_form_factor.toFixed(4) : 'N/A';
+  derivedBlock.innerHTML = `<strong>Derived Component Geometry (R${project.revision})</strong><br/>
+• Pitch diameter d_p: ${d_p} mm<br/>
+• Tip diameter d_a: ${d_a} mm<br/>
+• Root diameter d_f: ${d_f} mm<br/>
+• Base diameter d_b: ${d_b} mm<br/>
+• Lewis bending stress σ_b: ${sigma_b} (Y = ${lewis_y})`;
+  container.append(derivedBlock);
+
+  // Action buttons
+  const actions = document.createElement('div');
+  actions.className = 'component-editor-actions';
+
+  const previewBtn = document.createElement('button');
+  previewBtn.id = 'btn-preview-component-edit';
+  previewBtn.type = 'button';
+  previewBtn.textContent = 'Preview change impact';
+  previewBtn.onclick = () => runComponentPreview(componentId);
+
+  const applyBtn = document.createElement('button');
+  applyBtn.id = 'btn-apply-component-edit';
+  applyBtn.type = 'button';
+  applyBtn.className = 'primary';
+  applyBtn.textContent = 'Accept modification ↗';
+  applyBtn.disabled = true;
+  applyBtn.onclick = () => runComponentApply(componentId);
+
+  const resetBtn = document.createElement('button');
+  resetBtn.id = 'btn-reset-component-edit';
+  resetBtn.type = 'button';
+  resetBtn.textContent = 'Reset';
+  resetBtn.onclick = () => {
+    teethInput.value = teethInput.dataset.original;
+    modInput.value = modInput.dataset.original;
+    fwInput.value = fwInput.dataset.original;
+    paInput.value = paInput.dataset.original;
+    boreInput.value = boreInput.dataset.original;
+    activePreview = null;
+    applyBtn.disabled = true;
+    badge.className = 'lifecycle-badge lifecycle-draft';
+    badge.textContent = 'STATUS: DRAFT (EDITING)';
+    const previewContainer = byId('component-impact-preview');
+    if (previewContainer) previewContainer.replaceChildren();
+  };
+
+  const deselectBtn = document.createElement('button');
+  deselectBtn.id = 'btn-deselect-component';
+  deselectBtn.type = 'button';
+  deselectBtn.textContent = 'Deselect';
+  deselectBtn.onclick = () => setSelected(null);
+
+  actions.append(previewBtn, applyBtn, resetBtn, deselectBtn);
+  container.append(actions);
+
+  // Impact preview container
+  const impactContainer = document.createElement('div');
+  impactContainer.id = 'component-impact-preview';
+  container.append(impactContainer);
+}
+
+async function runComponentPreview(componentId) {
+  if (validatingPreview || applying || !project) return;
+  const teethInput = byId('comp-edit-teeth');
+  const modInput = byId('comp-edit-module');
+  const fwInput = byId('comp-edit-width');
+  const paInput = byId('comp-edit-pa');
+  const boreInput = byId('comp-edit-bore');
+  const badge = byId('component-lifecycle-badge');
+  const previewContainer = byId('component-impact-preview');
+  const applyBtn = byId('btn-apply-component-edit');
+  if (!teethInput || !previewContainer) return;
+
+  const params = {};
+  if (teethInput.value !== teethInput.dataset.original) params.teeth = Number(teethInput.value);
+  if (modInput.value !== modInput.dataset.original) params.module_mm = Number(modInput.value);
+  if (fwInput.value !== fwInput.dataset.original) params.face_width_mm = Number(fwInput.value);
+  if (paInput.value !== paInput.dataset.original) params.pressure_angle_deg = Number(paInput.value);
+  if (boreInput.value !== boreInput.dataset.original) {
+    if (boreInput.value.trim()) params.bore_diameter_mm = Number(boreInput.value);
+  }
+
+  if (Object.keys(params).length === 0) {
+    previewContainer.replaceChildren(textElement('p', 'No parameter values have been changed from the current revision.', 'assembly-evidence'));
+    if (badge) { badge.className = 'lifecycle-badge lifecycle-draft'; badge.textContent = 'STATUS: DRAFT (UNCHANGED)'; }
+    if (applyBtn) applyBtn.disabled = true;
+    return;
+  }
+
+  validatingPreview = true;
+  previewContainer.replaceChildren(textElement('p', 'Calculating change impact and validating engineering constraints…'));
+  if (badge) { badge.className = 'lifecycle-badge lifecycle-draft'; badge.textContent = 'STATUS: VALIDATING…'; }
+
+  try {
+    const res = await request('/project/component-edit/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        component_id: componentId,
+        expected_revision: project.revision,
+        parameters: params,
+      }),
+    });
+
+    if (disposed) return;
+    activePreview = res;
+
+    if (!res.valid) {
+      if (badge) { badge.className = 'lifecycle-badge lifecycle-invalid'; badge.textContent = 'STATUS: INVALID PROPOSAL'; }
+      if (applyBtn) applyBtn.disabled = true;
+      previewContainer.replaceChildren();
+      const errBox = document.createElement('div');
+      errBox.className = 'error';
+      errBox.innerHTML = `<strong>Modification Rejected:</strong><br/>${res.errors.join('<br/>')}`;
+      previewContainer.append(errBox);
+      return;
+    }
+
+    if (badge) { badge.className = 'lifecycle-badge lifecycle-validated'; badge.textContent = 'STATUS: VALIDATED (READY TO ACCEPT)'; }
+    if (applyBtn) applyBtn.disabled = false;
+
+    previewContainer.replaceChildren();
+
+    const impactHeader = document.createElement('h4');
+    impactHeader.style.margin = '12px 0 6px';
+    impactHeader.textContent = `Downstream Change Impact Preview (Target: R${res.target_revision})`;
+    previewContainer.append(impactHeader);
+
+    if (res.dependent_changes?.length) {
+      const table = document.createElement('table');
+      table.className = 'impact-table';
+      table.innerHTML = `<thead><tr><th>Parameter</th><th>Current (R${res.current_revision})</th><th>Proposed (R${res.target_revision})</th><th>Change</th></tr></thead><tbody></tbody>`;
+      const tbody = table.querySelector('tbody');
+      for (const item of res.dependent_changes) {
+        const deltaStr = item.delta > 0 ? `+${item.delta.toFixed(2)}` : item.delta.toFixed(2);
+        const deltaClass = item.delta > 0 ? 'delta-pos' : 'delta-neg';
+        const row = document.createElement('tr');
+        row.innerHTML = `<td><strong>${item.label}</strong></td><td>${item.formatted_current} ${item.unit}</td><td>${item.formatted_proposed} ${item.unit}</td><td class="${deltaClass}">${deltaStr} ${item.unit}</td>`;
+        tbody.append(row);
+      }
+      previewContainer.append(table);
+    }
+
+    if (res.meshing_note) {
+      const noteP = document.createElement('p');
+      noteP.style.marginTop = '8px';
+      noteP.style.fontSize = '12px';
+      noteP.style.color = '#344b5c';
+      noteP.innerHTML = `<strong>Assembly Kinematics:</strong> ${res.meshing_note}`;
+      previewContainer.append(noteP);
+    }
+
+    if (res.stale_artifacts?.length) {
+      const staleP = document.createElement('p');
+      staleP.style.marginTop = '6px';
+      staleP.style.fontSize = '12px';
+      staleP.style.color = '#805714';
+      staleP.innerHTML = `<strong>Artifact Staleness:</strong> Committing will mark ${res.stale_artifacts.length} existing artifact(s) stale (${res.stale_artifacts.slice(0, 3).join(', ')}${res.stale_artifacts.length > 3 ? '…' : ''}). Fresh exports will be generated on request for R${res.target_revision}.`;
+      previewContainer.append(staleP);
+    }
+
+  } catch (error) {
+    if (disposed) return;
+    if (badge) { badge.className = 'lifecycle-badge lifecycle-invalid'; badge.textContent = 'STATUS: ERROR'; }
+    if (applyBtn) applyBtn.disabled = true;
+    previewContainer.replaceChildren(textElement('p', `Preview failed: ${error.message}`, 'error'));
+  } finally {
+    validatingPreview = false;
+  }
+}
+
+async function runComponentApply(componentId) {
+  if (applying || !project || !activePreview || !activePreview.valid) return;
+  applying = true;
+  const previousRevision = project.revision;
+  const badge = byId('component-lifecycle-badge');
+  const previewContainer = byId('component-impact-preview');
+  const applyBtn = byId('btn-apply-component-edit');
+
+  if (applyBtn) applyBtn.disabled = true;
+  if (badge) { badge.className = 'lifecycle-badge lifecycle-draft'; badge.textContent = 'STATUS: ACCEPTED (COMMITTING…)'; }
+  setGeometryStatus('loading', `COMPONENT EDIT IN PROGRESS · REGENERATING CAD FOR REVISION ${previousRevision + 1}`);
+  setLoading(`Regenerating CAD assembly and recalculating engineering quantities for Revision ${previousRevision + 1}…`);
+
+  try {
+    const params = {};
+    for (const change of activePreview.parameter_changes) {
+      if (change.changed) params[change.parameter] = change.proposed_value;
+    }
+
+    const result = await request('/project/component-edit/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        component_id: componentId,
+        expected_revision: previousRevision,
+        parameters: params,
+      }),
+    });
+
+    if (disposed) return;
+    if (result.revision <= previousRevision) throw new Error('Server response did not advance the committed revision.');
+
+    project = result;
+    activePreview = null;
+    fill();
+    await build();
+    loadArtifacts(project.revision);
+
+    if (badge) { badge.className = 'lifecycle-badge lifecycle-regenerated'; badge.textContent = `STATUS: REGENERATED (COMMITTED R${project.revision})`; }
+    const summary = result.modification_summary;
+    if (previewContainer && summary) {
+      previewContainer.replaceChildren();
+      const successBox = document.createElement('div');
+      successBox.style.padding = '10px';
+      successBox.style.marginTop = '10px';
+      successBox.style.background = '#eef8fc';
+      successBox.style.border = '1px solid #bce1f0';
+      successBox.style.borderRadius = '3px';
+      successBox.innerHTML = `<strong>Revision ${result.revision} committed!</strong><br/>
+• Component: <code>${summary.component_id}</code> updated.<br/>
+• Regenerated CAD components: ${summary.regenerated_components.join(', ')}.<br/>
+• Prior artifacts (${summary.stale_artifacts.length}) marked stale.<br/>
+• Use export links to generate current R${result.revision} drawings, BOM, and CAD models.`;
+      previewContainer.append(successBox);
+    }
+
+    // Keep the modified component selected so its new parameters are immediately visible
+    setSelected(componentId);
+
+  } catch (error) {
+    if (disposed) return;
+    if (badge) { badge.className = 'lifecycle-badge lifecycle-invalid'; badge.textContent = 'STATUS: COMMIT FAILED'; }
+    if (previewContainer) previewContainer.replaceChildren(textElement('p', `Modification failed: ${error.message}`, 'error'));
+  } finally {
+    applying = false;
+    setLoading(null);
+    if (!disposed) fill();
+  }
 }
 
 function renderAssemblyInspector() {
@@ -951,8 +1321,8 @@ function fill() {
     required('assumptions').textContent=project.assumptions.join(' ');
     required('rev').textContent=`REVISION ${String(project.revision).padStart(2,'0')}`;required('result-rev').textContent=`REVISION ${String(project.revision).padStart(2,'0')}`;
     for (const link of document.querySelectorAll('.exports > a[data-artifact]')) {
-      link.hidden = link.dataset.artifact === 'gear-drawing';
-      link.href = link.dataset.artifact==='drawing'?`${api}/vehicle/layout.pdf`:link.dataset.artifact==='manifest'?`${api}/vehicle/manifest.json`:link.dataset.artifact==='bom'?`${api}/vehicle/bom.json`:link.dataset.artifact==='report.pdf'?`${api}/report.pdf`:link.dataset.artifact==='gear-drawing'?'#':`${api}/export/${link.dataset.artifact}`;
+      link.hidden = ['gear-drawing', 'gear-bom'].includes(link.dataset.artifact);
+      link.href = link.dataset.artifact==='drawing'?`${api}/vehicle/layout.pdf`:link.dataset.artifact==='manifest'?`${api}/vehicle/manifest.json`:link.dataset.artifact==='bom'?`${api}/vehicle/bom.json`:link.dataset.artifact==='report.pdf'?`${api}/report.pdf`:link.dataset.artifact==='gear-drawing'?'#':link.dataset.artifact==='gear-bom'?'#':`${api}/export/${link.dataset.artifact}`;
     }
     for (const rowId of ['row-tangential-load', 'row-pinion-stress', 'row-gear-stress']) {
       const el = byId(rowId);
@@ -980,6 +1350,7 @@ function fill() {
   for (const link of document.querySelectorAll('.exports > a[data-artifact]')) {
     link.hidden = ['drawing', 'manifest', 'bom'].includes(link.dataset.artifact);
     if (link.dataset.artifact === 'gear-drawing') link.href = `${api}/gear/layout.pdf`;
+    if (link.dataset.artifact === 'gear-bom') link.href = `${api}/gear/bom.json`;
   }
   required('intro-title').textContent='Spur gear study';required('family-label').textContent='SPUR GEAR PAIR · SCHEMA 1.0';required('stage-title').textContent='ASSEMBLY VIEW';
   required('geometry-note').textContent=`SAMPLED INVOLUTE · ${Number(requirements.pressure_angle_deg ?? 20).toFixed(1)}° · mm`;
@@ -1162,6 +1533,7 @@ function pick(event) {
   ray.setFromCamera(mouse, camera);
   const hit = ray.intersectObjects(Object.values(meshes).filter((mesh) => mesh.visible))[0];
   if (hit) setSelected(hit.object.userData.id);
+  else setSelected(null);
 }
 
 required('components').addEventListener('click', (event) => {

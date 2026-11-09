@@ -239,3 +239,25 @@ footer { min-height: 48px; display: flex; align-items: center; justify-content: 
 .vehicle-edit-fields small { color: #526575; font: 12px/1.4 var(--font-mono); overflow-wrap: anywhere; }
 #vehicle-edit-status { overflow-wrap: anywhere; }
 @media (max-width: 440px) { .vehicle-edit-fields { grid-template-columns: 1fr; } }
+
+/* Component parameter editor & modification lifecycle */
+.component-editor { margin-top: 18px; padding: 12px; border: 1px solid #b9cbd2; background: #f6fafb; border-radius: 4px; }
+.component-editor .railhead { margin-bottom: 12px; }
+.component-editor label { display: block; margin: 8px 0; font-size: 13px; font-weight: 600; color: #344b5b; }
+.component-editor input { width: 100%; height: 36px; margin-top: 4px; padding: 0 8px; border: 1px solid #c9d5dc; background: #fff; font: 14px var(--font-mono); }
+.component-editor-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.component-editor-actions button { min-height: 38px; padding: 6px 12px; font-size: 13px; font-weight: 650; cursor: pointer; border: 1px solid #a9c1ca; background: #eaf3f5; color: #173247; }
+.component-editor-actions button.primary { background: #102a3a; color: #fff; border: 0; }
+.component-editor-actions button.primary:hover { background: #1c4256; }
+.component-editor-actions button:disabled { opacity: .55; cursor: not-allowed; }
+.lifecycle-badge { display: inline-block; padding: 2px 7px; border-radius: 3px; font: 600 11px var(--font-mono); text-transform: uppercase; margin-bottom: 8px; }
+.lifecycle-draft { background: #e9ecef; color: #495057; }
+.lifecycle-validated { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+.lifecycle-regenerated { background: #cce5ff; color: #004085; border: 1px solid #b8daff; }
+.lifecycle-invalid { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+.impact-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; font-family: var(--font-mono); }
+.impact-table th { background: #eef4f7; padding: 5px 6px; text-align: left; border-bottom: 1px solid #d3dfe4; }
+.impact-table td { padding: 5px 6px; border-bottom: 1px solid #e9ecef; }
+.impact-table .delta-pos { color: #1d7044; }
+.impact-table .delta-neg { color: #812d26; }
+.component-derived-props { margin-top: 10px; padding: 8px; background: #eef4f7; border-radius: 3px; font-size: 12px; font-family: var(--font-mono); line-height: 1.6; }

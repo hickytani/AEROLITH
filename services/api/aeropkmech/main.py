@@ -31,6 +31,13 @@ from .domain import Design, EditRequest, InterpretRequest
 from .automotive import (COMPONENT_INFO, VEHICLE_DRAWING_VERSION, VEHICLE_EDITABLE_PARAMETERS, VEHICLE_GENERATOR_VERSION, VehicleDesign, VehicleGenerationRequest, VehicleParameterEditRequest, make_vehicle_design, propagate_vehicle_edits, vehicle_bom, vehicle_manifest, vehicle_verification, vehicle_component_solids, export_vehicle_drawing_pdf, export_vehicle_component_stl, export_vehicle_step, export_vehicle_stl)
 from .engineering import calculation_details, derive, validate
 from .drawings import GEAR_DRAWING_VERSION, gear_pair_reference_pdf
+from .modifications import (
+    GEAR_COMPONENT_PARAMETER_MAP,
+    ComponentEditApplyRequest,
+    ComponentEditPreviewRequest,
+    gear_bom,
+    preview_component_edit,
+)
 from .families import (
     IMPLEMENTED_FAMILIES,
     PLANNED_FAMILY_AREAS,
@@ -693,6 +700,109 @@ def project_change_impact(request: ChangeImpactRequest):
             "note": "Dependency mapping is conservative and family-level; each listed output must be regenerated or recalculated after the reviewed edit."}
 
 
+@app.post("/api/v1/project/component-edit/preview")
+def preview_component_modification(request: ComponentEditPreviewRequest):
+    """Preview the downstream impact of editing a component parameter before committing."""
+    design = store.load()
+    if request.expected_revision != design.revision:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Project revision advanced from {request.expected_revision} to {design.revision}. Reload before previewing edits.",
+            headers={"X-Design-Revision": str(design.revision)},
+        )
+    try:
+        return preview_component_edit(design, request.component_id, request.parameters, ARTIFACTS)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/project/component-edit/apply")
+def apply_component_modification(request: ComponentEditApplyRequest):
+    """Explicitly commit a validated component parameter edit, regenerating CAD and advancing revision."""
+    current = store.load()
+    if current.family != "spur_gear_pair":
+        raise HTTPException(status_code=422, detail="Component-level editing currently supports the spur_gear_pair family.")
+    if request.expected_revision != current.revision:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Project revision advanced from {request.expected_revision} to {current.revision}. Reload and review before modifying.",
+            headers={"X-Design-Revision": str(current.revision)},
+        )
+    if request.component_id not in GEAR_COMPONENT_PARAMETER_MAP:
+        raise HTTPException(status_code=422, detail=f"Unknown component '{request.component_id}'.")
+
+    # Run preview to validate inputs and calculate impact
+    try:
+        preview = preview_component_edit(current, request.component_id, request.parameters, ARTIFACTS)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not preview["valid"]:
+        raise HTTPException(status_code=422, detail=f"Modification rejected: {'; '.join(preview['errors'])}")
+
+    # Map parameters to canonical fields
+    allowed_params = GEAR_COMPONENT_PARAMETER_MAP[request.component_id]
+    canonical_edits = {}
+    for param_name, val in request.parameters.items():
+        canonical_name, unit, _, _, _ = allowed_params[param_name]
+        canonical_edits[canonical_name] = int(val) if unit == "count" else val
+
+    # Build candidate with audit history
+    candidate = current.model_copy(deep=True)
+    candidate.history.append({
+        "revision": current.revision,
+        "changed_at": current.updated_at,
+        "component_id": request.component_id,
+        "changed_parameters": list(request.parameters.keys()),
+        "design": current.model_dump(mode="json", exclude={"history"}),
+    })
+
+    changed_canonical_names = set(canonical_edits)
+    if "pinion_teeth" in canonical_edits:
+        candidate.components[0].teeth = int(canonical_edits.pop("pinion_teeth"))
+    if "gear_teeth" in canonical_edits:
+        candidate.components[1].teeth = int(canonical_edits.pop("gear_teeth"))
+    for key, value in canonical_edits.items():
+        setattr(candidate.requirements, key, value)
+
+    candidate.requirements.gear_ratio = candidate.components[1].teeth / candidate.components[0].teeth
+    for name in changed_canonical_names:
+        candidate.requirement_sources[name] = "user-provided"
+        candidate.requirement_evidence.pop(name, None)
+    if {"pinion_teeth", "gear_teeth"}.intersection(changed_canonical_names):
+        candidate.requirement_sources["gear_ratio"] = "derived"
+        candidate.requirement_evidence.pop("gear_ratio", None)
+
+    candidate.revision += 1
+    candidate.updated_at = datetime.now(timezone.utc).isoformat()
+    candidate.parameter_quantities = {}
+    candidate.parameter_records = {}
+
+    try:
+        candidate = Design.model_validate(candidate.model_dump(mode="json"))
+        assembly_evidence = build_assembly_evidence(candidate)
+    except (ValueError, ValidationError) as exc:
+        raise HTTPException(status_code=422, detail=f"Geometry validation failed: {exc}") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"CAD assembly regeneration failed: {exc}") from exc
+
+    previous_artifacts = artifact_store.list_artifacts(ARTIFACTS, current)
+    save_candidate_at_revision(candidate, current.revision)
+
+    res = response(candidate, assembly_evidence)
+    res["modification_summary"] = {
+        "lifecycle_state": "REGENERATED",
+        "component_id": request.component_id,
+        "previous_revision": current.revision,
+        "new_revision": candidate.revision,
+        "changed_parameters": request.parameters,
+        "regenerated_components": preview["affected_components"],
+        "dependent_changes": preview["dependent_changes"],
+        "stale_artifacts": [item["artifact_id"] for item in previous_artifacts if item["available"]],
+        "message": f"Component '{request.component_id}' updated. Assembly regenerated at revision {candidate.revision}.",
+    }
+    return res
+
+
 class ProposeEditRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     text: str | None = Field(default=None, max_length=2000)
@@ -945,6 +1055,17 @@ def gear_layout_export():
     return FileResponse(path, media_type="application/pdf", filename=path.name, headers=artifact_headers(metadata, design.revision))
 
 
+@app.get("/api/v1/gear/bom.json")
+def gear_bom_export():
+    design = store.load()
+    if design.family != "spur_gear_pair":
+        raise HTTPException(status_code=409, detail="The gear BOM is only available for a spur_gear_pair project.")
+    require_current_revision(design)
+    payload = json.dumps(gear_bom(design), indent=2, ensure_ascii=False).encode("utf-8")
+    path, metadata = artifact_store.publish(payload, ARTIFACTS, design, "gear-bom", "json", "gear-bom-0.1")
+    return FileResponse(path, media_type="application/json", filename=path.name, headers=artifact_headers(metadata, design.revision))
+
+
 @app.get("/api/v1/report", response_class=HTMLResponse)
 def report():
     design = store.load()
@@ -1026,6 +1147,17 @@ def report_pdf():
     except Exception as exc:
         raise ArtifactExecutionError(f"PDF report generation failed: {exc}") from exc
     return FileResponse(path, media_type="application/pdf", filename=path.name, headers=artifact_headers(metadata, design.revision))
+
+
+@app.get("/api/v1/gear/bom.json")
+def gear_bom_export():
+    design = store.load()
+    if design.family != "spur_gear_pair":
+        raise HTTPException(status_code=409, detail="The gear BOM is only available for a spur_gear_pair project.")
+    require_current_revision(design)
+    payload = json.dumps(gear_bom(design), indent=2, ensure_ascii=False).encode("utf-8")
+    path, metadata = artifact_store.publish(payload, ARTIFACTS, design, "gear-bom", "json", "gear-bom-0.1")
+    return FileResponse(path, media_type="application/json", filename=path.name, headers=artifact_headers(metadata, design.revision))
 
 
 def artifact_headers(metadata: dict, revision: int, stale: bool = False) -> dict[str, str]:
