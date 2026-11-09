@@ -323,6 +323,12 @@ function renderAssemblyInspector() {
     panel.append(textElement('strong', `${selected.id} · parent ${selected.parent_id}`));
     panel.append(textElement('p', `Placement: ${JSON.stringify(selected.placement)} · bounds: ${selected.bounds_mm.join(' × ')} mm · valid solid: ${selected.geometry_valid} · volume: ${selected.volume_mm3.toPrecision(5)} mm³`));
     panel.append(textElement('p', `Canonical parameter dependencies: ${selected.parameter_refs.join(', ') || 'none'}`, 'assembly-evidence'));
+    if (project?.derived?.components) {
+      const compData = project.derived.components.find((c) => c.id === selected.id);
+      if (compData) {
+        panel.append(textElement('p', `Parametric: ${compData.teeth} teeth · Pitch d_p = ${compData.pitch_diameter_mm.toFixed(2)} mm · Tip d_a = ${compData.outer_diameter_mm.toFixed(2)} mm · Root d_f = ${compData.root_diameter_mm.toFixed(2)} mm · Lewis \u03c3_b = ${compData.bending_stress_MPa ? compData.bending_stress_MPa.toFixed(1) + ' MPa' : 'N/A'}`));
+      }
+    }
   } else if (selectedId) {
     panel.append(textElement('p', `No assembly component record matches selected component ${selectedId}.`, 'error'));
   } else {
@@ -945,8 +951,12 @@ function fill() {
     required('assumptions').textContent=project.assumptions.join(' ');
     required('rev').textContent=`REVISION ${String(project.revision).padStart(2,'0')}`;required('result-rev').textContent=`REVISION ${String(project.revision).padStart(2,'0')}`;
     for (const link of document.querySelectorAll('.exports > a[data-artifact]')) {
-      link.hidden = false;
-      link.href = link.dataset.artifact==='drawing'?`${api}/vehicle/layout.pdf`:link.dataset.artifact==='manifest'?`${api}/vehicle/manifest.json`:link.dataset.artifact==='bom'?`${api}/vehicle/bom.json`:link.dataset.artifact==='report.pdf'?`${api}/report.pdf`:`${api}/export/${link.dataset.artifact}`;
+      link.hidden = link.dataset.artifact === 'gear-drawing';
+      link.href = link.dataset.artifact==='drawing'?`${api}/vehicle/layout.pdf`:link.dataset.artifact==='manifest'?`${api}/vehicle/manifest.json`:link.dataset.artifact==='bom'?`${api}/vehicle/bom.json`:link.dataset.artifact==='report.pdf'?`${api}/report.pdf`:link.dataset.artifact==='gear-drawing'?'#':`${api}/export/${link.dataset.artifact}`;
+    }
+    for (const rowId of ['row-tangential-load', 'row-pinion-stress', 'row-gear-stress']) {
+      const el = byId(rowId);
+      if (el) el.hidden = true;
     }
     const checks=required('checks');checks.replaceChildren();
     for (const [name,item] of Object.entries(project.verification||{})) {
@@ -963,7 +973,14 @@ function fill() {
   }
   required('vehicle-editor').hidden=true;
   for (const id of ['pinion','gear','module','pressure-angle','width','torque','speed','apply']) { const el=byId(id); if (el) {el.hidden=false;if(el.tagName==='INPUT') el.parentElement.hidden=false;} }
-  for (const link of document.querySelectorAll('.exports > a[data-artifact]')) link.hidden=['drawing','manifest','bom'].includes(link.dataset.artifact);
+  for (const rowId of ['row-tangential-load', 'row-pinion-stress', 'row-gear-stress']) {
+    const el = byId(rowId);
+    if (el) el.hidden = false;
+  }
+  for (const link of document.querySelectorAll('.exports > a[data-artifact]')) {
+    link.hidden = ['drawing', 'manifest', 'bom'].includes(link.dataset.artifact);
+    if (link.dataset.artifact === 'gear-drawing') link.href = `${api}/gear/layout.pdf`;
+  }
   required('intro-title').textContent='Spur gear study';required('family-label').textContent='SPUR GEAR PAIR · SCHEMA 1.0';required('stage-title').textContent='ASSEMBLY VIEW';
   required('geometry-note').textContent=`SAMPLED INVOLUTE · ${Number(requirements.pressure_angle_deg ?? 20).toFixed(1)}° · mm`;
   required('pinion').value = project.components[0].teeth;
@@ -978,6 +995,9 @@ function fill() {
   required('out-speed').textContent = `${derived.output_speed_rpm.toFixed(0)} rpm`;
   required('out-torque').textContent = `${derived.ideal_output_torque_Nm.toFixed(1)} N·m`;
   required('bore').textContent = `${derived.bore_diameter_mm.toFixed(1)} mm`;
+  if (byId('tangential-load')) byId('tangential-load').textContent = derived.tangential_load_N ? `${derived.tangential_load_N.toFixed(1)} N` : '—';
+  if (byId('pinion-stress')) byId('pinion-stress').textContent = derived.pinion_bending_stress_MPa ? `${derived.pinion_bending_stress_MPa.toFixed(1)} MPa` : '—';
+  if (byId('gear-stress')) byId('gear-stress').textContent = derived.gear_bending_stress_MPa ? `${derived.gear_bending_stress_MPa.toFixed(1)} MPa` : '—';
   required('pinion-name').textContent = derived.components[0].name;
   required('gear-name').textContent = derived.components[1].name;
   required('pinion-meta').textContent = `DRIVER · INPUT · ${derived.components[0].teeth} teeth · ${derived.components[0].pitch_diameter_mm.toFixed(1)} mm pitch`;

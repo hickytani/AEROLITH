@@ -4,11 +4,31 @@
 
 Inputs are millimetres, newton-metres, and revolutions per minute. API input fields are numeric and state their units; arbitrary unit-bearing values are not accepted. Requirement text extraction explicitly converts torque stated in N·mm to N·m. The external gear ratio is `z_driven / z_pinion`; pitch diameter is `module × tooth_count`; center distance is half the sum of pitch diameters. Under an explicitly stated ideal, lossless transmission assumption, output speed is input speed divided by ratio and output torque is input torque multiplied by ratio. These are algebraic kinematics and ideal torque relations, not a tooth-strength result.
 
+### Lewis bending stress (implemented)
+
+The API calculates and reports Lewis bending stress for the pinion and driven gear.
+
+**Formula:** `σ_b = F_t / (b · m · Y)`
+
+Where:
+- `F_t` = tangential load at the pitch circle, computed as `F_t = 2000 · T₁ / d₁` (N; `T₁` in N·m, `d₁` in mm)
+- `b` = face width (mm)
+- `m` = module (mm)
+- `Y` = Lewis form factor, from a 24-entry table of standard 20° full-depth involute values (Shigley's Mechanical Engineering Design, Table 14-2). Tooth counts between table entries are linearly interpolated. When the actual pressure angle differs from 20°, `Y` is scaled by `tan(α) / tan(20°)`.
+
+**Assumptions:** single-tooth tip loading; `K_v = 1` (no dynamic factor); no stress concentration factor; no service factor; standard 20° full-depth tooth form used as the reference geometry for `Y`. The formula gives a preliminary stress estimate for comparative purposes; it is not a fatigue-rated or standard-certified result.
+
+**Result:** `pinion_bending_stress_MPa` and `gear_bending_stress_MPa` are present in the `derived` object for all valid gear designs. The pinion value is typically higher because the pinion has fewer teeth and therefore a smaller `Y`.
+
+**Status in verification object:** `tooth_strength` remains `UNKNOWN` because no material allowable stress (`σ_all`), fatigue strength reduction factor, overload factor, or service factor have been supplied. The evidence block within the `UNKNOWN` result reports the calculated stress values (e.g., `Pinion 59.9 MPa (Y=0.3090)`) and lists the missing inputs explicitly.
+
 The CAD boundary is an ordinary unshifted external involute spur gear with explicit pressure angle `α` (14–30°, assumed 20° when omitted), pitch diameter `d = mz`, base diameter `d_b = d cos α`, addendum radius `m(z+2)/2`, and dedendum/root radius `m(z−2.5)/2`. The flank uses the mathematical involute parameterization `x = r_b(cos t + t sin t)`, `y = r_b(sin t − t cos t)`; each flank is interpolated as an Open CASCADE spline through 17 exact involute samples (16 intervals). The root transition uses a straight radial connector from `max(r_b, r_root)` to the assumed root circle; it is not a generated cutter trochoid or fillet. The profile assumes zero nominal backlash and no profile shift. CadQuery builds an Open CASCADE extruded solid with a center bore and places the two gears at nominal pitch-center distance. `outer_diameter_mm` remains the nominal addendum-circle diameter, not necessarily the phase-dependent CAD bounding-box span. The illustrative shared bore `min(max(2 × module, 4 mm), 0.7 × minimum root diameter)` is not a shaft interface requirement. STEP preserves kernel geometry; STL tessellates it. Valid solids and visual placement do not establish correct pair contact or engagement.
 
 ## Status and evidence
 
 The API `verification` object gives each analysis a state, summary, and evidence. Supported states are `PASSED`, `WARNING`, `FAILED`, `PARTIAL`, `UNKNOWN`, `UNTESTED`, `UNOBSERVABLE`, and `EXECUTION_ERROR`. The top-level `overall` result is `PARTIAL` for any valid design and never `PASSED`; failed implemented input checks make it `FAILED`, without asserting mechanical failure. Implemented input checks may pass without implying physical performance. Ideal kinematics are `PARTIAL`; sampled involute geometry is `WARNING`; tooth strength is `UNKNOWN`; tooth contact is `UNOBSERVABLE`; thermal analysis is `UNTESTED`; service conditions are `UNOBSERVABLE`. API execution failures carry `EXECUTION_ERROR`. No result is a simulation, safety factor, certification, or manufacturing assessment. Reports include the revision and report version. Project calculation records contain formula, substitution, units, assumptions, reference note, method version and the source revision.
+
+For `tooth_strength` specifically: its state is `UNKNOWN` because no material allowable stress or service factors are supplied. However, the evidence array now contains the computed Lewis stress values (e.g., `Pinion 59.9 MPa (Y=0.3090), Gear 44.7 MPa (Y=0.4142)`) alongside an explicit list of the missing inputs. This allows an engineer to compare the calculated stress estimate against their own material data while still seeing that no verified pass/fail judgment has been made.
 
 ## Validation
 
@@ -22,7 +42,25 @@ The component preview uses CAD-generated STL coordinates in millimetres with one
 
 ## Known gaps
 
-No validated tooth-contact/interference or contact-ratio checks, shaft or support design, cutter-generated root fillet, material properties, standards-based bending/contact stress, fatigue, thermal behavior, solver, uncertainty, or independent profile benchmark is included. Do not use these artifacts for manufacture or real-world design decisions.
+**Hertzian contact stress:** Not calculated. Requires elastic modulus (E), Poisson's ratio (ν), and load distribution factor for both materials. These material properties are not supplied by the current API; computing contact stress without them would require fabricated inputs.
+
+**Material allowable stress:** No `σ_all` is available. Without a material-specific allowable bending stress (or surface durability rating), the Lewis stress result cannot be compared to a yield or fatigue limit. This is why `tooth_strength` remains `UNKNOWN` rather than `PASSED` or `FAILED`.
+
+**Dynamic and service factors:** `K_v` (velocity/dynamic factor), `K_a` (application factor), `K_s` (size factor), `K_m` (load distribution), and `K_B` (rim thickness) are all set to unity. Real gear analysis requires these; omitting them understates predicted stress.
+
+**Fatigue and life:** No S-N data, cycle count, or reliability factor. No fatigue-rated output is produced.
+
+**Tooth contact and interference:** No contact ratio, interference, or tip-contact checks.
+
+**Shaft, support and bearing design:** Not modeled. No shaft diameter, deflection, or bearing selection.
+
+**Cutter-generated root fillet:** The root transition uses a straight radial connector, not a generated trochoid. This means root stress concentrations are not modeled.
+
+**Thermal behavior, solver, uncertainty:** Not included.
+
+**Independent profile benchmark:** The geometry tests are implementation regression checks against the same code's involute formula, not an independent standards benchmark.
+
+Do not use these artifacts for manufacture or real-world design decisions.
 
 ## Generated assembly relationship checks
 

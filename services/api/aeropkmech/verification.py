@@ -5,7 +5,7 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field
 
 from .domain import Design
-from .engineering import validate
+from .engineering import derive, validate
 
 
 class VerificationState(StrEnum):
@@ -34,6 +34,29 @@ def summarize(design: Design) -> dict[str, VerificationItem]:
         evidence=issues or ["Current project satisfies the implemented checks."],
     )
     overall_state = VerificationState.FAILED if issues else VerificationState.PARTIAL
+    derived = derive(design) if not issues else {}
+    if derived:
+        p_stress = derived["pinion_bending_stress_MPa"]
+        g_stress = derived["gear_bending_stress_MPa"]
+        p_y = derived["pinion_lewis_form_factor"]
+        g_y = derived["gear_lewis_form_factor"]
+        f_t = derived["tangential_load_N"]
+        tooth_strength_item = VerificationItem(
+            state=VerificationState.UNKNOWN,
+            summary="Strength is unknown because required materials, allowable stress limits, and service factors are not modeled.",
+            evidence=[
+                f"Calculated Lewis bending stress: Pinion {p_stress:.1f} MPa (Y={p_y:.4f}), Driven gear {g_stress:.1f} MPa (Y={g_y:.4f}) under nominal tangential load {f_t:.1f} N.",
+                "Missing required strength inputs: Material specification, allowable bending stress limit, application service factor (K_a), and dynamic velocity factor (K_v).",
+                "Contact stress (Hertzian) is not calculated: Requires elastic modulus (E) and Poisson's ratio (\u03bd) for both materials.",
+            ],
+        )
+    else:
+        tooth_strength_item = VerificationItem(
+            state=VerificationState.UNKNOWN,
+            summary="Strength is unknown because required materials, geometry factors, and criteria are not modeled.",
+            evidence=["Design contains validation errors; stress calculation aborted."],
+        )
+
     return {
         "overall": VerificationItem(
             state=overall_state,
@@ -59,11 +82,7 @@ def summarize(design: Design) -> dict[str, VerificationItem]:
             summary="Sampled mathematical involute flanks with an approximate straight radial root connector; valid solid construction does not establish correct tooth engagement.",
             evidence=["Spline-interpolated flanks; no contact, interference, strength, or manufacturing checks."],
         ),
-        "tooth_strength": VerificationItem(
-            state=VerificationState.UNKNOWN,
-            summary="Strength is unknown because required materials, geometry factors, and criteria are not modeled.",
-            evidence=["No bending or contact stress calculation is implemented."],
-        ),
+        "tooth_strength": tooth_strength_item,
         "tooth_contact": VerificationItem(
             state=VerificationState.UNKNOWN,
             summary="The profile uses involute flanks, but contact path, conjugate motion and interference have not been verified.",

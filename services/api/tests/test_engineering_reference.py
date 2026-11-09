@@ -135,3 +135,48 @@ def test_mixed_verification_states_never_collapse_to_overall_pass():
     assert verification["thermal_analysis"].state == VerificationState.UNTESTED
     assert verification["service_conditions"].state == VerificationState.UNOBSERVABLE
     assert verification["overall"].state != VerificationState.PASSED
+
+
+def test_lewis_bending_stress_reference_calculation():
+    from aeropkmech.engineering import calculation_details, lewis_bending_stress, lewis_form_factor
+    design = default_design()
+    derived = derive(design)
+
+    # Tangential load: F_t = 2000 * 8.0 N*m / 36.0 mm = 444.444... N
+    expected_ft = 2000.0 * 8.0 / 36.0
+    assert derived["tangential_load_N"] == pytest.approx(expected_ft, rel=0, abs=1e-9)
+
+    # Lewis form factor: 18 teeth -> 0.309
+    y_pinion = lewis_form_factor(18, 20.0)
+    assert y_pinion == 0.309
+    assert derived["pinion_lewis_form_factor"] == 0.309
+
+    # Lewis form factor: 54 teeth -> interpolated between 50 (0.409) and 60 (0.422) = 0.4142
+    y_gear = lewis_form_factor(54, 20.0)
+    assert y_gear == pytest.approx(0.4142, abs=1e-4)
+
+    # Pinion stress: F_t / (b * m * Y) = 444.444 / (12 * 2 * 0.309) = 59.930... MPa
+    expected_sigma_pinion = expected_ft / (12.0 * 2.0 * 0.309)
+    assert derived["pinion_bending_stress_MPa"] == pytest.approx(expected_sigma_pinion, rel=0, abs=1e-4)
+
+    # Gear stress: F_t / (b * m * Y) = 444.444 / (12 * 2 * 0.4142) = 44.709... MPa
+    expected_sigma_gear = expected_ft / (12.0 * 2.0 * y_gear)
+    assert derived["gear_bending_stress_MPa"] == pytest.approx(expected_sigma_gear, rel=0, abs=1e-4)
+
+    # Pinion stress exceeds gear stress due to lower tooth count
+    assert derived["pinion_bending_stress_MPa"] > derived["gear_bending_stress_MPa"]
+
+    # Verify calculation_details contains stress entries with provenance
+    details = calculation_details(design)
+    keys = {item["key"] for item in details["results"]}
+    assert "tangential_load_N" in keys
+    assert "pinion_bending_stress_MPa" in keys
+    assert "gear_bending_stress_MPa" in keys
+
+    # Verify verification evidence reports stress values while keeping status UNKNOWN
+    verif = summarize(design)
+    assert verif["tooth_strength"].state == VerificationState.UNKNOWN
+    evidence_text = " ".join(verif["tooth_strength"].evidence)
+    assert "Lewis bending stress" in evidence_text
+    assert "59.9" in evidence_text
+    assert "Missing required strength inputs" in evidence_text

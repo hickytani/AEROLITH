@@ -201,6 +201,57 @@ def gear_profile_wire(teeth: int, module: float, pressure_angle_deg: float = 20.
     return wire
 
 
+class ComponentPlacement:
+    """Reusable transform representing component placement in assembly space."""
+
+    def __init__(
+        self,
+        translation_mm: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        rotation_axis: tuple[float, float, float] = (0.0, 0.0, 1.0),
+        rotation_angle_deg: float = 0.0,
+    ):
+        self.translation_mm = translation_mm
+        self.rotation_axis = rotation_axis
+        self.rotation_angle_deg = rotation_angle_deg
+
+    def to_cq_location(self) -> cq.Location:
+        return cq.Location(
+            cq.Vector(*self.translation_mm),
+            cq.Vector(*self.rotation_axis),
+            self.rotation_angle_deg,
+        )
+
+    def apply(self, solid: cq.Workplane) -> cq.Workplane:
+        """Apply transform to solid, returning placed solid in assembly coordinates."""
+        if abs(self.rotation_angle_deg) > 1e-9:
+            solid = solid.rotate((0, 0, 0), self.rotation_axis, self.rotation_angle_deg)
+        if any(abs(v) > 1e-9 for v in self.translation_mm):
+            solid = solid.translate(self.translation_mm)
+        return solid
+
+
+def gear_placement_transforms(design: Design) -> dict[str, ComponentPlacement]:
+    """Compute component placement transforms from design requirements."""
+    req = design.requirements
+    p, g = design.components
+    center = req.module_mm * (p.teeth + g.teeth) / 2
+    return {
+        "pinion": ComponentPlacement(
+            translation_mm=(0.0, 0.0, 0.0),
+            rotation_axis=(0.0, 0.0, 1.0),
+            rotation_angle_deg=0.0,
+        ),
+        "gear": ComponentPlacement(
+            translation_mm=(center, 0.0, 0.0),
+            rotation_axis=(0.0, 0.0, 1.0),
+            rotation_angle_deg=180.0 / g.teeth,
+        ),
+    }
+
+
+_COMPONENT_SOLID_CACHE: dict[tuple, cq.Shape] = {}
+
+
 def gear_solid(
     teeth: int, module: float, width: float, bore_diameter: float,
     pressure_angle_deg: float = 20.0,
@@ -222,6 +273,18 @@ def gear_solid(
         raise ValueError("Gear face width must be finite and between 2 and 60 mm.")
     if not math.isfinite(bore_diameter) or bore_diameter < 0:
         raise ValueError("Gear bore diameter must be finite and nonnegative.")
+
+    cache_key = (
+        teeth, round(module, 6), round(width, 6), round(bore_diameter, 6),
+        round(pressure_angle_deg, 4),
+        round(hub_diameter_mm, 6) if hub_diameter_mm is not None else None,
+        round(hub_length_mm, 6) if hub_length_mm is not None else None,
+        round(keyway_width_mm, 6) if keyway_width_mm is not None else None,
+        round(keyway_depth_mm, 6) if keyway_depth_mm is not None else None,
+    )
+    if cache_key in _COMPONENT_SOLID_CACHE:
+        return cq.Workplane("XY").newObject([_COMPONENT_SOLID_CACHE[cache_key].copy()])
+
     wire = gear_profile_wire(teeth, module, pressure_angle_deg)
     solid_shape = cq.Solid.extrudeLinear(wire, [], cq.Vector(0, 0, width)).translate((0, 0, -width / 2))
     solid = cq.Workplane("XY").newObject([solid_shape])
@@ -254,6 +317,10 @@ def gear_solid(
         solid = cq.Workplane("XY").newObject([solid.val().cut(key_cutter.val())])
     if not solid.val().isValid() or not math.isfinite(solid.val().Volume()) or solid.val().Volume() <= 0:
         raise ValueError("Involute gear profile did not produce a valid positive-volume solid.")
+
+    if len(_COMPONENT_SOLID_CACHE) >= 32:
+        _COMPONENT_SOLID_CACHE.pop(next(iter(_COMPONENT_SOLID_CACHE)))
+    _COMPONENT_SOLID_CACHE[cache_key] = solid.val().copy()
     return solid
 
 
@@ -263,20 +330,19 @@ def build_assembly(design: Design) -> cq.Assembly:
     req = design.requirements
     p, g = design.components
     module, width = req.module_mm, req.face_width_mm
-    d1, d2 = module * p.teeth, module * g.teeth
-    center = (d1 + d2) / 2
     bore = req.bore_diameter_mm if req.bore_diameter_mm is not None else bore_diameter_mm(design)
     hub_d, hub_l = req.hub_diameter_mm, req.hub_length_mm
     kw_w, kw_d = req.keyway_width_mm, req.keyway_depth_mm
     pinion = gear_solid(p.teeth, module, width, bore, req.pressure_angle_deg, hub_d, hub_l, kw_w, kw_d)
     gear = gear_solid(g.teeth, module, width, bore, req.pressure_angle_deg, hub_d, hub_l, kw_w, kw_d)
+    transforms = gear_placement_transforms(design)
     assembly = cq.Assembly(name=f"spur_gear_pair_r{design.revision}")
-    assembly.add(pinion, name="pinion", color=cq.Color(0.0, 0.66, 0.78))
+    assembly.add(pinion, name="pinion", loc=transforms["pinion"].to_cq_location(), color=cq.Color(0.0, 0.66, 0.78))
     # Align tooth and gap at the mesh line for a clearer educational assembly view.
     assembly.add(
         gear,
         name="driven_gear",
-        loc=cq.Location(cq.Vector(center, 0, 0), cq.Vector(0, 0, 1), 180 / g.teeth),
+        loc=transforms["gear"].to_cq_location(),
         color=cq.Color(0.61, 0.68, 0.72),
     )
     return assembly
@@ -302,10 +368,9 @@ def export_component_stl(design: Design, component_id: str, target: Path) -> Non
     hub_d, hub_l = req.hub_diameter_mm, req.hub_length_mm
     kw_w, kw_d = req.keyway_width_mm, req.keyway_depth_mm
     solid = gear_solid(component.teeth, req.module_mm, req.face_width_mm, bore, req.pressure_angle_deg, hub_d, hub_l, kw_w, kw_d)
-    if component_id == "gear":
-        center = req.module_mm * (design.components[0].teeth + component.teeth) / 2
-        solid = solid.rotate((0, 0, 0), (0, 0, 1), 180 / component.teeth).translate((center, 0, 0))
-    solid.val().exportStl(
+    transforms = gear_placement_transforms(design)
+    placed_solid = transforms[component_id].apply(solid)
+    placed_solid.val().exportStl(
         str(target), tolerance=0.08, angularTolerance=0.15, ascii=False, relative=True, parallel=False
     )
 

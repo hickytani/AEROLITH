@@ -13,6 +13,7 @@ This note records public references and calculations behind the educational exte
 5. NIST, [SI Units of Length](https://www.nist.gov/pml/owm/si-units-length), for the exact millimetre-to-metre scale used in the `N·mm` to `N·m` conversion.
 6. MIT, [Gears: Involutes](https://pergatory.mit.edu/resources/FUNdaMENTALs%20Book%20pdf/FUNdaMENTALs%20Topic%206.PDF), for the involute base-circle construction and the dependence of compatible involute gearing on pressure angle.
 7. NASA, [Analytical and Experimental Evaluation of Spur Gear Tooth Root Stresses](https://ntrs.nasa.gov/api/citations/20130000783/downloads/20130000783.pdf?attachment=true), for spur-gear base-circle and pressure-angle relations. This is a reference for geometry, not evidence that this application implements the report's stress analysis.
+8. Budynas, R. G. and Nisbett, J. K., *Shigley's Mechanical Engineering Design*, 11th Edition, McGraw-Hill, Chapter 14 (Gears: Mechanical Aspects), Table 14-2 (Values of the Lewis Form Factor Y for 20° Full-Depth Involute Teeth) and equation 14-7 (`σ = W_t / (F m Y)` in metric SI units). Reference for the Lewis bending stress calculation and form factor table.
 
 ## Equations and stated assumptions
 
@@ -26,6 +27,8 @@ For an ordinary external pair with pinion tooth count `z1`, driven tooth count `
 - Standard nominal addendum and root reference diameters: `d_a = m(z+2)` and `d_f = m(z−2.5)` (KHK references 1 and 3).
 - Involute base diameter: `d_b = d cos α`, where `α` is the reference pressure angle (MIT and NASA references 6 and 7). The CAD flank is interpolated from 17 exact samples of the circle involute parameterization `x = r_b(cos t + t sin t)`, `y = r_b(sin t − t cos t)`. For the ordinary unshifted assumption, pitch-circle half tooth thickness is `π/(2z)`.
 - Torque conversion: `1 N·mm = 0.001 N·m` because `1 mm = 0.001 m` (NIST reference 5).
+- Tangential transmitted load at pitch circle: `F_t = 2000 · T1 / d1` (N, with input torque `T1` in N·m and pinion pitch diameter `d1` in mm).
+- Lewis bending stress: `σ_b = F_t / (b · m · Y)` (MPa, with face width `b` in mm, module `m` in mm, and dimensionless form factor `Y` interpolated from Shigley Table 14-2 for 20° full-depth teeth, scaled by `tan(α)/tan(20°)` if `α ≠ 20°`). Assumptions: single-tooth tip load, dynamic factor `K_v = 1.0`, application factor `K_a = 1.0`, no stress concentration factor, and no material allowable comparison. This is a simplified educational estimate, not an AGMA or ISO gear rating.
 
 The CAD generator interpolates one spline edge through 17 exact samples (16 intervals) per involute flank, uses addendum `m` and dedendum `1.25m`, and connects each active flank start to the root circle with a straight radial connector. That connector is not a cutter-generated trochoid. The geometry assumes no profile shift and zero nominal backlash. The nominal addendum diameter need not equal the axis-aligned CAD bounds because the sampled tooth profile is phase-dependent. Actual spline edges are sampled and checked against the polar involute relation; this verifies implementation geometry only. Nominal center distance does not prove contact or interference-free operation.
 
@@ -40,6 +43,21 @@ The following expected values are literal test fixtures independently evaluated 
 | 16/16 | 1 | 1200 | 2 | 1 | 16/16 | 16 | 1200 | 2 |
 | 8/8 | 0.5 | 120 | 0.5 | 1 | 4/4 | 4 | 120 | 0.5 |
 | 80/120 | 6 | 1200 | 4 | 1.5 | 480/720 | 600 | 800 | 6 |
+
+### Lewis bending stress reference case
+
+For the default spur gear pair (`z1 = 18`, `z2 = 54`, `m = 2.0 mm`, `b = 12.0 mm`, `α = 20°`, `T1 = 8.0 N·m`):
+
+| Quantity | Formula / Source | Independent Reference Value |
+|---|---|---:|
+| Pinion pitch diameter `d1` | `m · z1` | `36.0 mm` |
+| Tangential transmitted load `F_t` | `2000 · T1 / d1` | `444.444 N` (`4000/9 N`) |
+| Pinion Lewis form factor `Y1` | Shigley Table 14-2 (`z = 18`) | `0.3090` |
+| Gear Lewis form factor `Y2` | Linear interpolation between `z=50` (0.409) and `z=60` (0.422) for `z=54` | `0.4142` |
+| Pinion Lewis bending stress `σ_b1` | `F_t / (b · m · Y1)` = `444.444 / (12 · 2 · 0.3090)` | `59.925 MPa` (approx. `59.9 MPa`) |
+| Gear Lewis bending stress `σ_b2` | `F_t / (b · m · Y2)` = `444.444 / (12 · 2 · 0.4142)` | `44.708 MPa` (approx. `44.7 MPa`) |
+
+The unit test `test_lewis_bending_stress_reference_calculation` validates these exact figures against `derive(default_design())` and confirms that pinion bending stress exceeds gear bending stress because `Y1 < Y2`.
 
 The API reference-case tests compare floats with absolute tolerance `1e−10` and zero relative tolerance, then check the persisted revision and inputs. The geometric arithmetic has exact simple products; the tolerance is for IEEE-754 serialization and division. The existing standalone engineering-reference tests also check range boundaries and conversion parsing.
 
